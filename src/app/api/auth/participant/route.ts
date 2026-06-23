@@ -12,7 +12,6 @@ export async function POST(request: Request) {
   const category = normalizeCategory(String(body.category || ''));
   const enteredName = String(body.name || '').trim();
   const userAgent = request.headers.get('user-agent') || '';
-  const ipAddress = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || '';
 
   if (!usercode || !password || !category) {
     return jsonError('Enter your category, usercode and password.');
@@ -26,7 +25,7 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (error) return jsonError(error.message, 500);
-  if (!participant || !participant.is_active) return jsonError('Invalid code, password or category.', 401);
+  if (!participant) return jsonError('Invalid code, password or category.', 401);
 
   const passwordOk = await verifyPassword(password, participant.password_hash);
   if (!passwordOk) return jsonError('Invalid code, password or category.', 401);
@@ -48,8 +47,10 @@ export async function POST(request: Request) {
     .maybeSingle();
 
   if (completed) {
-    return jsonError('This code has already completed the test. Use the Results page to view your result.', 403);
+    return jsonError('This code has already completed the test and has been closed. Use the Results page to view your result.', 403);
   }
+
+  if (!participant.is_active) return jsonError('This code is closed and cannot be used to start a test. Contact the contest administrator if this is a mistake.', 403);
 
   let { data: session, error: sessionError } = await supabaseAdmin
     .from('contest_sessions')
@@ -75,7 +76,6 @@ export async function POST(request: Request) {
     let { data: questions, error: qError } = await questionQuery;
     if (qError) return jsonError(qError.message, 500);
 
-    // Fallback: if an admin has not tagged questions by stage yet, still allow the category questions.
     if (!questions || questions.length === 0) {
       const fallback = await supabaseAdmin
         .from('questions')
@@ -143,7 +143,6 @@ export async function POST(request: Request) {
     event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType,
     login_token: loginToken,
     user_agent: userAgent,
-    ip_address: ipAddress,
     details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true }
   }).then(() => null);
 
@@ -154,8 +153,7 @@ export async function POST(request: Request) {
       event_type: 'MULTIPLE_OR_REPEAT_USERCODE_LOGIN',
       severity: 'high',
       details: { previousLogins, message: 'The same usercode logged in again. Older browser sessions were invalidated.' },
-      user_agent: userAgent,
-      ip_address: ipAddress
+      user_agent: userAgent
     }).then(() => null);
   }
 
