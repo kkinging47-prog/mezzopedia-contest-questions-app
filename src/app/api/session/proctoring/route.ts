@@ -4,27 +4,41 @@ import { jsonError } from '@/lib/utils';
 import { getActiveParticipantSession } from '@/lib/sessionGuard';
 
 const allowedSeverities = new Set(['low', 'medium', 'high', 'critical']);
-const MAX_DATA_URL_CHARS = 1_500_000;
+const MAX_DATA_URL_CHARS = 3_000_000;
+const EVIDENCE_BUCKET = 'proctoring-evidence';
+
+const mimeToExt: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'audio/webm': 'webm',
+  'audio/wav': 'wav',
+  'audio/mpeg': 'mp3',
+  'audio/mp4': 'm4a',
+  'video/webm': 'webm'
+};
 
 function parseDataUrl(dataUrl?: string) {
   if (!dataUrl || typeof dataUrl !== 'string') return null;
   if (dataUrl.length > MAX_DATA_URL_CHARS) return null;
-  const match = dataUrl.match(/^data:(image\/(png|jpeg|webp));base64,(.+)$/);
+  const match = dataUrl.match(/^data:([^;,]+)(?:;[^,]*)?;base64,(.+)$/);
   if (!match) return null;
-  return { mimeType: match[1], ext: match[2] === 'jpeg' ? 'jpg' : match[2], data: Buffer.from(match[3], 'base64') };
+  const mimeType = match[1].toLowerCase();
+  const ext = mimeToExt[mimeType];
+  if (!ext) return null;
+  return { mimeType, ext, data: Buffer.from(match[2], 'base64') };
 }
 
 async function uploadEvidence(sessionId: string, eventType: string, label: string, dataUrl?: string) {
   const parsed = parseDataUrl(dataUrl);
   if (!parsed) return null;
   const cleanType = eventType.replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
-  const path = `proctoring/${sessionId}/${Date.now()}-${cleanType}-${label}.${parsed.ext}`;
+  const path = `${sessionId}/${Date.now()}-${cleanType}-${label}.${parsed.ext}`;
   const { error } = await supabaseAdmin.storage
-    .from('contest-assets')
+    .from(EVIDENCE_BUCKET)
     .upload(path, parsed.data, { contentType: parsed.mimeType, upsert: false });
   if (error) return null;
-  const { data } = supabaseAdmin.storage.from('contest-assets').getPublicUrl(path);
-  return data.publicUrl;
+  return path;
 }
 
 export async function POST(request: NextRequest) {
@@ -36,15 +50,17 @@ export async function POST(request: NextRequest) {
   const severity = allowedSeverities.has(String(body.severity)) ? String(body.severity) : 'medium';
   const rawDetails = body.details && typeof body.details === 'object' ? body.details : {};
 
-  const [faceSnapshotUrl, screenSnapshotUrl] = await Promise.all([
+  const [faceSnapshotPath, screenSnapshotPath, audioEvidencePath] = await Promise.all([
     uploadEvidence(session.id, eventType, 'face', rawDetails.faceSnapshotDataUrl),
-    uploadEvidence(session.id, eventType, 'screen', rawDetails.screenSnapshotDataUrl)
+    uploadEvidence(session.id, eventType, 'screen', rawDetails.screenSnapshotDataUrl),
+    uploadEvidence(session.id, eventType, 'audio', rawDetails.audioEvidenceDataUrl)
   ]);
 
-  const { faceSnapshotDataUrl, screenSnapshotDataUrl, ...safeDetails } = rawDetails;
+  const { faceSnapshotDataUrl, screenSnapshotDataUrl, audioEvidenceDataUrl, ...safeDetails } = rawDetails;
   const evidence = {
-    ...(faceSnapshotUrl ? { faceSnapshotUrl } : {}),
-    ...(screenSnapshotUrl ? { screenSnapshotUrl } : {})
+    ...(faceSnapshotPath ? { faceSnapshotPath } : {}),
+    ...(screenSnapshotPath ? { screenSnapshotPath } : {}),
+    ...(audioEvidencePath ? { audioEvidencePath } : {})
   };
 
   const { error } = await supabaseAdmin.from('proctoring_events').insert({
