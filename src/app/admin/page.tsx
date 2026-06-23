@@ -9,7 +9,9 @@ type Participant = { id: string; name: string; usercode: string; category: strin
 type QuestionOption = { id: string; text: string; imageUrl?: string };
 type Question = { id: string; category: string; question_text: string; question_image_url?: string; options: QuestionOption[]; correct_option_id: string; points: number; phase: string; is_active: boolean };
 type Result = { id: string; name: string; usercode: string; category: string; status?: string; score: number; maxScore: number; totalQuestions: number; percentage: number; timeUsedSeconds: number; submittedAt: string; proctoringSummary: { riskLevel?: string; total?: number; critical?: number; high?: number; byType?: Record<string, number> } };
-type ProctorEvent = { id: string; eventType: string; severity: string; details: Record<string, unknown>; evidence: { faceSnapshotUrl?: string; screenSnapshotUrl?: string }; createdAt: string; name: string; usercode: string; category: string; contestStage?: string; ipAddress?: string };
+type Evidence = { faceSnapshotUrl?: string; screenSnapshotUrl?: string; audioEvidenceUrl?: string; faceSnapshotPath?: string; screenSnapshotPath?: string; audioEvidencePath?: string };
+type ProctorEvent = { id: string; eventType: string; severity: string; details: Record<string, unknown>; evidence: Evidence; createdAt: string; name: string; usercode: string; category: string; contestStage?: string; ipAddress?: string; userAgent?: string; sessionStatus?: string };
+type LoginEvent = { id: string; eventType: string; createdAt: string; name: string; usercode: string; category: string; contestStage?: string; sessionStatus?: string; userAgent?: string; deviceType?: string; browserName?: string; osName?: string; details?: Record<string, unknown> };
 type ConfigMap = Record<string, string>;
 
 type QuestionForm = {
@@ -67,6 +69,42 @@ const SYMBOLS = [
   { label: '¾', value: '¾' }
 ];
 
+const EVENT_EXPLANATIONS: Record<string, string> = {
+  PROCTORING_STARTED: 'Monitoring started. Camera, microphone, and/or screen permission was checked for this candidate.',
+  PERIODIC_PROCTORING_SNAPSHOT: 'A regular evidence snapshot was attempted. When permissions allow, face and screen images are saved for review.',
+  TAB_SWITCH_OR_APP_BACKGROUND: 'The candidate left the test tab or the browser moved to the background.',
+  WINDOW_BLUR: 'The test window lost focus. This may happen when another tab, window, or app is opened.',
+  WINDOW_BLUR_OR_EXTERNAL_APP_FOCUS: 'The test window lost focus. This may happen when another tab, window, or app is opened.',
+  PASTE_BLOCKED: 'The candidate tried to paste content into the test page. The action was blocked and recorded.',
+  COPY_OR_CUT_BLOCKED: 'The candidate tried to copy/cut content from the test page. The action was blocked and recorded.',
+  RIGHT_CLICK_BLOCKED: 'The candidate tried to open the right-click menu. The action was blocked and recorded.',
+  BLOCKED_KEYBOARD_SHORTCUT_OR_SCREENSHOT_ATTEMPT: 'A restricted keyboard shortcut was pressed, such as copy, paste, print, save, view source, or screenshot-related keys.',
+  FULLSCREEN_EXITED: 'The candidate left fullscreen during the test.',
+  FULLSCREEN_DECLINED: 'The candidate declined fullscreen mode.',
+  POSSIBLE_SPLIT_SCREEN_OR_SMALL_WINDOW: 'The browser window became unusually small, which can indicate split-screen mode or window resizing.',
+  POSSIBLE_DEVTOOLS_OR_SCREEN_OVERLAY_PANEL: 'The browser window dimensions suggest developer tools, a side panel, or a screen overlay may be open.',
+  CAMERA_STOPPED_OR_BLOCKED: 'The camera stopped, was blocked, or became unavailable during the test.',
+  CAMERA_COVERED_OR_TOO_DARK: 'The camera image became very dark, which may mean the camera was covered or the room was too dark.',
+  SURROUNDING_AUDIO_SPIKE_DETECTED: 'The microphone detected loud surrounding sound. A short audio clip is saved when the browser supports it.',
+  POSSIBLE_ANSWER_SPOKEN_OR_EXTERNAL_VOICE: 'Possible speech or nearby voice was detected. A short audio clip may be available for review.',
+  SCREEN_SHARE_STOPPED: 'The candidate stopped screen sharing during the test.',
+  SCREEN_SHARE_DECLINED: 'The candidate declined screen sharing on a browser/device where it is supported.',
+  CAMERA_OR_MICROPHONE_DENIED: 'The candidate declined camera or microphone permission.',
+  TEST_SUBMISSION_ATTEMPT: 'The candidate submitted or attempted to submit the test.'
+};
+
+function explain(eventType: string) {
+  return EVENT_EXPLANATIONS[eventType] || eventType.replaceAll('_', ' ').toLowerCase();
+}
+
+function severityMeaning(severity: string) {
+  const s = severity?.toLowerCase?.() || 'low';
+  if (s === 'critical') return 'Critical: review immediately before accepting the result.';
+  if (s === 'high') return 'High: likely violation or serious risk.';
+  if (s === 'medium') return 'Medium: suspicious behaviour that needs context.';
+  return 'Low: routine monitoring/information record.';
+}
+
 export default function AdminPage() {
   const [authenticated, setAuthenticated] = useState(false);
   const [checking, setChecking] = useState(true);
@@ -81,6 +119,7 @@ export default function AdminPage() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [results, setResults] = useState<Result[]>([]);
   const [proctoringEvents, setProctoringEvents] = useState<ProctorEvent[]>([]);
+  const [loginEvents, setLoginEvents] = useState<LoginEvent[]>([]);
   const [message, setMessage] = useState('');
 
   const [participantForm, setParticipantForm] = useState({ category: DEFAULT_CATEGORIES[0], name: '', usercode: '', password: '', paymentStatus: 'unpaid', contestStage: 'Stage 1' });
@@ -90,6 +129,8 @@ export default function AdminPage() {
   const [fileInputKey, setFileInputKey] = useState(0);
   const [resultCategory, setResultCategory] = useState('All');
   const [resultSort, setResultSort] = useState('highestScore');
+  const [proctorSearch, setProctorSearch] = useState('');
+  const [proctorSeverity, setProctorSeverity] = useState('All');
 
   const completedCount = useMemo(() => results.filter(r => r.submittedAt).length, [results]);
   const sortedResults = useMemo(() => {
@@ -100,6 +141,23 @@ export default function AdminPage() {
       return b.score - a.score || a.timeUsedSeconds - b.timeUsedSeconds;
     });
   }, [results, resultCategory, resultSort]);
+
+  const filteredProctoringEvents = useMemo(() => {
+    const q = proctorSearch.trim().toLowerCase();
+    return proctoringEvents.filter(event => {
+      const severityOk = proctorSeverity === 'All' || event.severity?.toLowerCase() === proctorSeverity.toLowerCase();
+      const searchOk = !q || [event.name, event.usercode, event.category, event.eventType, event.contestStage].some(v => String(v || '').toLowerCase().includes(q));
+      return severityOk && searchOk;
+    });
+  }, [proctoringEvents, proctorSearch, proctorSeverity]);
+
+  const proctorCounts = useMemo(() => ({
+    total: proctoringEvents.length,
+    critical: proctoringEvents.filter(e => e.severity === 'critical').length,
+    high: proctoringEvents.filter(e => e.severity === 'high').length,
+    audio: proctoringEvents.filter(e => e.evidence?.audioEvidenceUrl).length,
+    images: proctoringEvents.filter(e => e.evidence?.faceSnapshotUrl || e.evidence?.screenSnapshotUrl).length
+  }), [proctoringEvents]);
 
   useEffect(() => {
     fetch('/api/admin/me').then(res => {
@@ -128,7 +186,7 @@ export default function AdminPage() {
 
   async function loadAll() {
     setMessage('Loading latest data...');
-    await Promise.all([loadConfig(), loadParticipants(), loadQuestions(), loadResults(), loadProctoringEvents()]);
+    await Promise.all([loadConfig(), loadParticipants(), loadQuestions(), loadResults(), loadProctoringEvents(), loadLoginEvents()]);
     setMessage('');
   }
 
@@ -151,6 +209,10 @@ export default function AdminPage() {
   async function loadProctoringEvents() {
     const json = await fetch('/api/admin/proctoring').then(r => r.json()).catch(() => ({}));
     setProctoringEvents(json.events || []);
+  }
+  async function loadLoginEvents() {
+    const json = await fetch('/api/admin/logins').then(r => r.json()).catch(() => ({}));
+    setLoginEvents(json.events || []);
   }
 
   async function saveConfig(event: FormEvent) {
@@ -335,6 +397,8 @@ export default function AdminPage() {
     return <main className="math-bg centered"><div className="container" style={{ maxWidth: 560 }}><form className="card card-pad" onSubmit={login} autoComplete="off"><a className="badge" href="/">← Home</a><h1 style={{ fontSize: '2.4rem' }}>Admin Login</h1><p className="muted">Use the secure admin credentials you set in environment variables.</p>{error && <div className="alert alert-error">{error}</div>}<label><span className="label">Email</span><input className="input" value={email} onChange={e => setEmail(e.target.value)} autoComplete="off" /></label><label><span className="label">Password</span><div className="flex"><input className="input" type={showPassword ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} autoComplete="new-password" /><button type="button" className="btn btn-light" onClick={() => setShowPassword(v => !v)}>{showPassword ? 'Hide' : 'View'}</button></div></label><button className="btn btn-primary" style={{ width: '100%', marginTop: 18 }}>Login</button></form></div></main>;
   }
 
+  const tabs = ['dashboard','participants','questions','results','certificates','proctoring','loginLogs','security'];
+
   return (
     <main className="math-bg" style={{ paddingBottom: 40 }}>
       <div className="container">
@@ -354,7 +418,7 @@ export default function AdminPage() {
 
         <section className="card card-pad" style={{ marginTop: 18 }}>
           <div className="tabs no-print">
-            {['dashboard','participants','questions','results','certificates','proctoring','security'].map(t => <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t === 'proctoring' ? 'AI Proctoring' : title(t)}</button>)}
+            {tabs.map(t => <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>{t === 'proctoring' ? 'AI Proctoring' : t === 'loginLogs' ? 'Login Logs' : title(t)}</button>)}
           </div>
 
           {tab === 'dashboard' && <Dashboard results={results} questions={questions} />}
@@ -404,7 +468,8 @@ export default function AdminPage() {
 
           {tab === 'results' && <div className="grid"><div className="flex wrap"><button className="btn btn-primary" onClick={exportResultsExcel}>Export Excel</button><button className="btn btn-light" onClick={loadResults}>Refresh Results</button><DropdownField label="Class/Category" value={resultCategory} options={['All', ...DEFAULT_CATEGORIES]} onChange={setResultCategory} compact /><DropdownField label="Order By" value={resultSort} options={['highestScore','fastestTime','category']} onChange={setResultSort} compact /></div><ResultsTable results={sortedResults} /></div>}
           {tab === 'certificates' && <div className="grid"><p>Generate certificate PDFs for completed candidates. A more advanced designed template can be added later.</p><ResultsTable results={sortedResults} certificateAction={generateCertificate} /></div>}
-          {tab === 'proctoring' && <div className="grid"><div className="flex wrap"><button className="btn btn-light" onClick={loadProctoringEvents}>Refresh AI Proctoring</button></div><ProctoringTable events={proctoringEvents} /></div>}
+          {tab === 'proctoring' && <ProctoringReview events={filteredProctoringEvents} counts={proctorCounts} search={proctorSearch} severity={proctorSeverity} onSearch={setProctorSearch} onSeverity={setProctorSeverity} onRefresh={loadProctoringEvents} />}
+          {tab === 'loginLogs' && <LoginLogs events={loginEvents} onRefresh={loadLoginEvents} />}
           {tab === 'security' && <SecurityPanel />}
         </section>
       </div>
@@ -430,7 +495,7 @@ function Dashboard({ results, questions }: { results: Result[]; questions: Quest
 }
 
 function ParticipantsTable({ participants, onDelete }: { participants: Participant[]; onDelete: (id: string) => void }) {
-  return <div className="table-wrap"><table><thead><tr><th>Name</th><th>Code</th><th>Category</th><th>Payment</th><th>Stage</th><th>Active</th><th>Logins</th><th>Action</th></tr></thead><tbody>{participants.map(p => <tr key={p.id}><td>{p.name}</td><td>{p.usercode}</td><td>{p.category}</td><td>{p.payment_status}</td><td>{p.contest_stage || 'Stage 1'}</td><td>{p.is_active ? 'Yes' : 'No'}</td><td>{p.login_count}</td><td><button className="btn btn-danger" onClick={() => onDelete(p.id)}>Delete</button></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>Name</th><th>Code</th><th>Category</th><th>Payment</th><th>Stage</th><th>Access</th><th>Logins</th><th>Action</th></tr></thead><tbody>{participants.map(p => <tr key={p.id}><td>{p.name}</td><td>{p.usercode}</td><td>{p.category}</td><td>{p.payment_status}</td><td>{p.contest_stage || 'Stage 1'}</td><td>{p.is_active ? 'Open' : 'Closed'}</td><td>{p.login_count}</td><td><button className="btn btn-danger" onClick={() => onDelete(p.id)}>Delete</button></td></tr>)}</tbody></table></div>;
 }
 
 function QuestionsTable({ questions, onDelete, onEdit }: { questions: Question[]; onDelete: (id: string) => void; onEdit: (question: Question) => void }) {
@@ -441,8 +506,48 @@ function ResultsTable({ results, certificateAction }: { results: Result[]; certi
   return <div className="table-wrap"><table><thead><tr><th>Name</th><th>Code</th><th>Category</th><th>Score</th><th>%</th><th>Time</th><th>Risk</th>{certificateAction && <th>Certificate</th>}</tr></thead><tbody>{results.map(r => <tr key={r.id}><td>{r.name}</td><td>{r.usercode}</td><td>{r.category}</td><td>{r.score}/{r.maxScore}</td><td>{r.percentage}%</td><td>{formatTime(r.timeUsedSeconds)}</td><td>{r.proctoringSummary?.riskLevel || 'LOW'} ({r.proctoringSummary?.total || 0})</td>{certificateAction && <td><button className="btn btn-light" onClick={() => certificateAction(r)}>Download</button></td>}</tr>)}</tbody></table></div>;
 }
 
+function ProctoringReview({ events, counts, search, severity, onSearch, onSeverity, onRefresh }: { events: ProctorEvent[]; counts: { total: number; critical: number; high: number; audio: number; images: number }; search: string; severity: string; onSearch: (v: string) => void; onSeverity: (v: string) => void; onRefresh: () => void }) {
+  return <div className="grid">
+    <div className="grid grid-4">
+      <Metric title="Total Events" value={String(counts.total)} />
+      <Metric title="Critical" value={String(counts.critical)} />
+      <Metric title="High" value={String(counts.high)} />
+      <Metric title="Audio Clips" value={String(counts.audio)} />
+    </div>
+    <div className="grid grid-2">
+      <div className="alert alert-info"><strong>Face evidence</strong><br />Use this to confirm the candidate was visible and the camera was not covered.</div>
+      <div className="alert alert-info"><strong>Screen evidence</strong><br />Use this to check whether the candidate stayed on the test page. It works only when screen sharing is allowed.</div>
+      <div className="alert alert-info"><strong>Audio evidence</strong><br />Short audio clips are saved only when suspicious sound or voice is detected. Click Play/Open Audio to listen later.</div>
+      <div className="alert alert-info"><strong>Severity guide</strong><br />Critical/High needs review before accepting the result. Medium is suspicious. Low is usually routine monitoring.</div>
+    </div>
+    <div className="flex wrap no-print"><button className="btn btn-light" onClick={onRefresh}>Refresh AI Proctoring</button><a className="btn btn-primary" href="/admin/proctoring">Open Full Review Page</a><label style={{ minWidth: 220 }}><span className="label">Search candidate/code/event</span><input className="input" value={search} onChange={e => onSearch(e.target.value)} /></label><DropdownField label="Severity" value={severity} options={['All','critical','high','medium','low']} onChange={onSeverity} compact /></div>
+    <ProctoringTable events={events} />
+  </div>;
+}
+
+function EvidenceViewer({ evidence }: { evidence: Evidence }) {
+  const hasEvidence = evidence?.faceSnapshotUrl || evidence?.screenSnapshotUrl || evidence?.audioEvidenceUrl;
+  if (!hasEvidence) return <span className="small muted">No file saved</span>;
+  return <div className="grid" style={{ gap: 8 }}>
+    <div className="flex wrap">
+      {evidence.faceSnapshotUrl && <a className="btn btn-light" href={evidence.faceSnapshotUrl} target="_blank">View Face</a>}
+      {evidence.screenSnapshotUrl && <a className="btn btn-light" href={evidence.screenSnapshotUrl} target="_blank">View Screen</a>}
+      {evidence.audioEvidenceUrl && <a className="btn btn-light" href={evidence.audioEvidenceUrl} target="_blank">Open Audio</a>}
+    </div>
+    {evidence.audioEvidenceUrl && <audio controls preload="none" src={evidence.audioEvidenceUrl} style={{ width: 260 }} />}
+  </div>;
+}
+
 function ProctoringTable({ events }: { events: ProctorEvent[] }) {
-  return <div className="table-wrap"><table><thead><tr><th>Time</th><th>Candidate</th><th>Code</th><th>Category</th><th>Stage</th><th>Violation</th><th>Severity</th><th>Evidence</th><th>Details</th></tr></thead><tbody>{events.map(e => <tr key={e.id}><td>{new Date(e.createdAt).toLocaleString()}</td><td>{e.name}</td><td>{e.usercode}</td><td>{e.category}</td><td>{e.contestStage || ''}</td><td>{e.eventType}</td><td>{e.severity.toUpperCase()}</td><td><div className="flex wrap">{e.evidence?.faceSnapshotUrl && <a className="btn btn-light" href={e.evidence.faceSnapshotUrl} target="_blank">Face</a>}{e.evidence?.screenSnapshotUrl && <a className="btn btn-light" href={e.evidence.screenSnapshotUrl} target="_blank">Screen</a>}</div></td><td><code className="small">{JSON.stringify(e.details).slice(0, 180)}</code></td></tr>)}</tbody></table></div>;
+  return <div className="table-wrap"><table><thead><tr><th>Time</th><th>Candidate</th><th>Code</th><th>Category</th><th>Stage</th><th>Violation</th><th>Meaning</th><th>Severity</th><th>Evidence</th><th>Details</th></tr></thead><tbody>{events.map(e => <tr key={e.id}><td>{new Date(e.createdAt).toLocaleString()}</td><td>{e.name}</td><td>{e.usercode}</td><td>{e.category}</td><td>{e.contestStage || ''}</td><td><strong>{e.eventType.replaceAll('_', ' ')}</strong></td><td>{explain(e.eventType)}</td><td><strong>{e.severity.toUpperCase()}</strong><br /><span className="small muted">{severityMeaning(e.severity)}</span></td><td><EvidenceViewer evidence={e.evidence || {}} /></td><td><code className="small">{JSON.stringify(e.details || {}).slice(0, 240)}</code></td></tr>)}</tbody></table></div>;
+}
+
+function LoginLogs({ events, onRefresh }: { events: LoginEvent[]; onRefresh: () => void }) {
+  return <div className="grid">
+    <div className="alert alert-info"><strong>Login Logs</strong><br />This page shows when each user logged in, the device type, browser, operating system, current session status, and repeat/double login events.</div>
+    <div className="flex wrap"><button className="btn btn-light" onClick={onRefresh}>Refresh Login Logs</button></div>
+    <div className="table-wrap"><table><thead><tr><th>Time</th><th>Candidate</th><th>Code</th><th>Category</th><th>Stage</th><th>Login Type</th><th>Device</th><th>Browser</th><th>OS</th><th>Session</th><th>Details</th></tr></thead><tbody>{events.map(event => <tr key={event.id}><td>{new Date(event.createdAt).toLocaleString()}</td><td>{event.name}</td><td>{event.usercode}</td><td>{event.category}</td><td>{event.contestStage || ''}</td><td><strong>{event.eventType.replaceAll('_', ' ')}</strong></td><td>{event.deviceType || 'Unknown'}</td><td>{event.browserName || 'Unknown'}</td><td>{event.osName || 'Unknown'}</td><td>{event.sessionStatus || ''}</td><td><code className="small">{JSON.stringify(event.details || {}).slice(0, 220)}</code></td></tr>)}</tbody></table></div>
+  </div>;
 }
 
 function SecurityPanel() {
