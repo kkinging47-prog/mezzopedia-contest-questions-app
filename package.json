@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "node restore-files.mjs && next dev",
-    "build": "node restore-files.mjs && next build",
+    "dev": "next dev",
+    "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "hash:password": "node restore-files.mjs && node scripts/hash-password.mjs"
+    "hash:password": "node scripts/hash-password.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

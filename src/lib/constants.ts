@@ -1,0 +1,24 @@
+export const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || 'Mezzopedia National Mathematics Contest';
+
+export const DEFAULT_CATEGORIES = [
+  'Primary 5',
+  'Primary 6',
+  'JHS 1',
+  'JHS 2',
+  'JHS 3',
+  'SHS',
+  'Adults'
+];
+
+export const CONTEST_STAGES = ['Stage 1', 'Stage 2', 'Stage 3'] as const;
+export const PAYMENT_STATUSES = ['paid', 'unpaid'] as const;
+
+export const TEST_DURATION_MINUTES = 70;
+export const QUESTIONS_PER_TEST = 80;
+
+export const COOKIE_NAMES = {
+  admin: 'mezzopedia_admin_token',
+  participant: 'mezzopedia_participant_token'
+} as const;
+
+export type ContestStatus = 'not_started' | 'in_progress' | 'completed' | 'expired';
