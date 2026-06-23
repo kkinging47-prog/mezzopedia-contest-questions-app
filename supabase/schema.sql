@@ -94,6 +94,9 @@ create table if not exists public.participant_login_events (
   created_at timestamptz not null default now()
 );
 
+create index if not exists idx_participant_login_events_created_at on public.participant_login_events(created_at desc);
+create index if not exists idx_participant_login_events_participant_id on public.participant_login_events(participant_id);
+
 create table if not exists public.admin_audit_logs (
   id uuid primary key default gen_random_uuid(),
   action text not null,
@@ -113,10 +116,18 @@ insert into public.app_config (key, value) values
   ('registrationDeadline', '"2026-07-25"')
 on conflict (key) do nothing;
 
--- Optional public storage bucket for uploaded contest images.
+-- Public bucket for question images and general contest assets.
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('contest-assets', 'contest-assets', true, 5242880, array['image/png','image/jpeg','image/webp','image/gif'])
 on conflict (id) do nothing;
+
+-- Private bucket for proctoring evidence. Admin API generates temporary signed links for viewing/listening.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('proctoring-evidence', 'proctoring-evidence', false, 3145728, array['image/png','image/jpeg','image/webp','audio/webm','audio/wav','audio/mpeg','audio/mp4','video/webm'])
+on conflict (id) do update set
+  public = false,
+  file_size_limit = 3145728,
+  allowed_mime_types = array['image/png','image/jpeg','image/webp','audio/webm','audio/wav','audio/mpeg','audio/mp4','video/webm'];
 
 -- Lock direct browser access. The app uses server-side API routes with the Supabase service role key.
 alter table public.app_config enable row level security;
@@ -129,10 +140,33 @@ alter table public.admin_audit_logs enable row level security;
 
 -- No public policies are added intentionally. Keep the service role key only in Vercel server env variables.
 
-
 -- Migration helpers for existing Supabase projects already created with an older version.
 alter table public.participants add column if not exists contest_stage text not null default 'Stage 1';
 alter table public.contest_sessions add column if not exists active_login_token text;
 alter table public.contest_sessions add column if not exists active_user_agent text;
 alter table public.contest_sessions add column if not exists last_reauth_at timestamptz;
 alter table public.proctoring_events add column if not exists evidence jsonb not null default '{}'::jsonb;
+
+-- Close a participant's access automatically after test completion so the same code cannot retake the test.
+create or replace function public.close_participant_after_completed_session()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.status = 'completed' and (old.status is distinct from new.status) then
+    update public.participants
+       set is_active = false,
+           updated_at = now()
+     where id = new.participant_id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_close_participant_after_completed_session on public.contest_sessions;
+create trigger trg_close_participant_after_completed_session
+after update of status on public.contest_sessions
+for each row
+execute function public.close_participant_after_completed_session();
