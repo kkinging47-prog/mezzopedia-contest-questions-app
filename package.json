@@ -1,0 +1,31 @@
+{
+  "name": "mezzopedia-contest-app",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "node restore-files.mjs && next dev",
+    "build": "node restore-files.mjs && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "hash:password": "node restore-files.mjs && node scripts/hash-password.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "bcryptjs": "^2.4.3",
+    "jose": "^5.9.6",
+    "jspdf": "^2.5.2",
+    "next": "^15.0.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.9.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "eslint": "^9.14.0",
+    "eslint-config-next": "^15.0.3",
+    "typescript": "^5.6.3"
+  }
+}
