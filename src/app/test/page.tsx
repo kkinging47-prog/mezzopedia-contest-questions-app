@@ -11,6 +11,7 @@ type SessionPayload = {
 };
 
 type Severity = 'low' | 'medium' | 'high' | 'critical';
+type CaptureEvidence = boolean | { images?: boolean; audio?: boolean };
 
 export default function TestPage() {
   const router = useRouter();
@@ -35,6 +36,7 @@ export default function TestPage() {
   const loggedRef = useRef<Record<string, number>>({});
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const audioRecordingRef = useRef(false);
 
   const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
   const screenCaptureSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices && 'getDisplayMedia' in navigator.mediaDevices;
@@ -52,6 +54,54 @@ export default function TestPage() {
     return canvas.toDataURL('image/jpeg', 0.55);
   }
 
+  function blobToDataUrl(blob: Blob) {
+    return new Promise<string>((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result || ''));
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function recordAudioEvidenceClip(durationMs = 4500) {
+    const audioTracks = mediaStreamRef.current?.getAudioTracks() || [];
+    if (!audioTracks.length || typeof MediaRecorder === 'undefined' || audioRecordingRef.current) return '';
+
+    audioRecordingRef.current = true;
+    return new Promise<string>((resolve) => {
+      const chunks: BlobPart[] = [];
+      let settled = false;
+      const finish = async (recorder?: MediaRecorder) => {
+        if (settled) return;
+        settled = true;
+        audioRecordingRef.current = false;
+        try {
+          if (!chunks.length) return resolve('');
+          const blob = new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' });
+          resolve(await blobToDataUrl(blob));
+        } catch {
+          resolve('');
+        }
+      };
+
+      try {
+        const audioStream = new MediaStream(audioTracks);
+        const options = typeof MediaRecorder.isTypeSupported === 'function' && MediaRecorder.isTypeSupported('audio/webm') ? { mimeType: 'audio/webm' } : undefined;
+        const recorder = new MediaRecorder(audioStream, options);
+        recorder.ondataavailable = event => { if (event.data && event.data.size > 0) chunks.push(event.data); };
+        recorder.onerror = () => finish(recorder);
+        recorder.onstop = () => finish(recorder);
+        recorder.start();
+        window.setTimeout(() => {
+          if (recorder.state !== 'inactive') recorder.stop();
+        }, durationMs);
+      } catch {
+        audioRecordingRef.current = false;
+        resolve('');
+      }
+    });
+  }
+
   function getFaceBrightness() {
     const video = videoRef.current;
     if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return null;
@@ -67,7 +117,7 @@ export default function TestPage() {
     return total / (data.length / 4);
   }
 
-  const logViolation = useCallback(async (eventType: string, severity: Severity, details: Record<string, unknown> = {}, captureEvidence = false) => {
+  const logViolation = useCallback(async (eventType: string, severity: Severity, details: Record<string, unknown> = {}, captureEvidence: CaptureEvidence = false) => {
     const now = Date.now();
     const key = `${eventType}:${severity}`;
     const throttleMs = eventType === 'PERIODIC_PROCTORING_SNAPSHOT' ? 9000 : 3000;
@@ -79,12 +129,20 @@ export default function TestPage() {
       window.setTimeout(() => setProctorWarning(''), 6500);
     }
 
+    const captureImages = typeof captureEvidence === 'boolean' ? captureEvidence : !!captureEvidence.images;
+    const captureAudio = typeof captureEvidence === 'object' ? !!captureEvidence.audio : false;
     const bodyDetails: Record<string, unknown> = { ...details, questionIndex: current + 1 };
-    if (captureEvidence) {
+
+    if (captureImages) {
       const faceSnapshotDataUrl = captureFromVideo(videoRef.current);
       const screenSnapshotDataUrl = captureFromVideo(screenVideoRef.current);
       if (faceSnapshotDataUrl) bodyDetails.faceSnapshotDataUrl = faceSnapshotDataUrl;
       if (screenSnapshotDataUrl) bodyDetails.screenSnapshotDataUrl = screenSnapshotDataUrl;
+    }
+
+    if (captureAudio) {
+      const audioEvidenceDataUrl = await recordAudioEvidenceClip();
+      if (audioEvidenceDataUrl) bodyDetails.audioEvidenceDataUrl = audioEvidenceDataUrl;
     }
 
     await fetch('/api/session/proctoring', {
@@ -185,7 +243,7 @@ export default function TestPage() {
         sum += centered * centered;
       }
       const rms = Math.sqrt(sum / buffer.length);
-      if (rms > 22) logViolation('SURROUNDING_AUDIO_SPIKE_DETECTED', 'medium', { rms: Math.round(rms) }, true);
+      if (rms > 22) logViolation('SURROUNDING_AUDIO_SPIKE_DETECTED', 'medium', { rms: Math.round(rms), explanation: 'The microphone detected a loud sound near the candidate. A short audio clip is saved for review when supported.' }, { images: true, audio: true });
     }, 2200);
 
     return () => {
@@ -204,7 +262,6 @@ export default function TestPage() {
       window.clearInterval(audioTimer);
     };
   }, [logViolation, proctorAccepted, isIOS]);
-
 
   useEffect(() => {
     if (!proctorAccepted) return;
@@ -265,7 +322,7 @@ export default function TestPage() {
         const transcript = Array.from(event.results).map((r: any) => r[0]?.transcript || '').join(' ').toLowerCase();
         const suspiciousWords = ['a', 'b', 'c', 'd', 'one', 'two', 'three', 'four', 'option', 'answer', 'choose'];
         if (suspiciousWords.some(word => new RegExp(`\\b${word}\\b`, 'i').test(transcript))) {
-          logViolation('POSSIBLE_ANSWER_SPOKEN_OR_EXTERNAL_VOICE', 'high', { transcript: transcript.slice(-220) }, true);
+          logViolation('POSSIBLE_ANSWER_SPOKEN_OR_EXTERNAL_VOICE', 'high', { transcript: transcript.slice(-220), explanation: 'Speech recognition detected possible answer words or outside voice near the candidate.' }, { images: true, audio: true });
         }
       };
       recognition.onerror = () => logViolation('SPEECH_RECOGNITION_ERROR', 'low');
@@ -374,7 +431,8 @@ export default function TestPage() {
             <span className="badge">AI Proctored Test</span>
             <h1 style={{ marginTop: 14 }}>Before You Continue</h1>
             <p>This test monitors camera/microphone permission, repeat logins, tab switching, copy/paste, keyboard shortcuts, fullscreen exits, small/split windows, suspicious browser panels, surrounding audio spikes, possible spoken answer clues, covered camera, and 10-second face/screen evidence snapshots where your browser allows it.</p>
-            <div className="alert alert-info">Camera and microphone access are required. On laptops/desktops, screen sharing is also required so the app can record screen evidence. Browsers cannot secretly detect every external app or overlay unless screen sharing permission is granted.</div>
+            <div className="alert alert-info">Camera and microphone access are required. On laptops/desktops, screen sharing is also required. Suspicious audio events save only a short review clip, and face/screen snapshots are saved only as proctoring evidence.</div>
+            <div className="alert alert-info">Browsers cannot secretly detect every external app or overlay unless screen-sharing permission is granted. If screen sharing is stopped, a critical violation is recorded.</div>
             {isIOS && <div className="alert alert-info">iPhone/iPad users are not forced into fullscreen and may not support screen sharing. Camera and microphone are still required.</div>}
             {proctorError && <div className="alert alert-error">{proctorError}</div>}
             <button className="btn btn-primary" onClick={startProctoring}>Allow Camera/Mic/Screen and Begin</button>
@@ -391,7 +449,7 @@ export default function TestPage() {
       <div className="proctor no-print">
         <strong>Proctoring Active</strong>
         <div className="small">📹 Camera: {cameraReady ? 'Active' : 'Required'} • 🎤 Audio: {audioReady ? 'Active' : 'Required'} • 🖥️ Screen: {screenReady || isIOS || !screenCaptureSupported ? 'Active/Not supported' : 'Required'}</div>
-        <div className="small">Violations logged: {violations}</div>
+        <div className="small">Violations logged: {violations}. Audio clips are saved only when suspicious sound or speech is detected.</div>
       </div>
 
       <div className="container">
