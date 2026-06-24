@@ -3,6 +3,18 @@ import { requireAdmin, hashPassword } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, safeText } from '@/lib/utils';
 
+type StageSettings = Record<string, { isOpen?: boolean }>;
+
+async function getStageOpenMap(): Promise<StageSettings> {
+  const { data } = await supabaseAdmin.from('app_config').select('value').eq('key', 'stageSettings').maybeSingle();
+  return data?.value && typeof data.value === 'object' ? data.value as StageSettings : {};
+}
+
+function isStageOpen(stageSettings: StageSettings, stage: string) {
+  if (!stageSettings || !stageSettings[stage]) return stage === 'Stage 1';
+  return Boolean(stageSettings[stage]?.isOpen);
+}
+
 export async function GET(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) return jsonError('Unauthorized.', 401);
@@ -20,11 +32,13 @@ export async function POST(request: NextRequest) {
   if (!admin) return jsonError('Unauthorized.', 401);
 
   const body = await request.json().catch(() => ({}));
+  const stageSettings = await getStageOpenMap();
 
   if (Array.isArray(body.participants)) {
     const rows = [];
     for (const item of body.participants) {
       const password = safeText(item.password);
+      const contestStage = safeText(item.contestStage || item.contest_stage || 'Stage 1');
       if (!safeText(item.category) || !safeText(item.name) || !safeText(item.usercode) || !password) continue;
       rows.push({
         category: safeText(item.category),
@@ -32,8 +46,8 @@ export async function POST(request: NextRequest) {
         usercode: safeText(item.usercode),
         password_hash: await hashPassword(password),
         payment_status: safeText(item.paymentStatus || item.payment_status || 'unpaid'),
-        contest_stage: safeText(item.contestStage || item.contest_stage || 'Stage 1'),
-        is_active: item.isActive ?? item.is_active ?? true
+        contest_stage: contestStage,
+        is_active: item.isActive ?? item.is_active ?? isStageOpen(stageSettings, contestStage)
       });
     }
     if (!rows.length) return jsonError('No valid participants found.');
@@ -46,6 +60,7 @@ export async function POST(request: NextRequest) {
   const name = safeText(body.name);
   const usercode = safeText(body.usercode);
   const password = safeText(body.password);
+  const contestStage = safeText(body.contestStage || body.contest_stage || 'Stage 1');
   if (!category || !name || !usercode || !password) return jsonError('Category, name, usercode and password are required.');
 
   const { data, error } = await supabaseAdmin
@@ -56,8 +71,8 @@ export async function POST(request: NextRequest) {
       usercode,
       password_hash: await hashPassword(password),
       payment_status: safeText(body.paymentStatus || body.payment_status || 'unpaid'),
-      contest_stage: safeText(body.contestStage || body.contest_stage || 'Stage 1'),
-      is_active: body.isActive ?? body.is_active ?? true
+      contest_stage: contestStage,
+      is_active: body.isActive ?? body.is_active ?? isStageOpen(stageSettings, contestStage)
     })
     .select('id,name,usercode,category,payment_status,contest_stage,is_active')
     .single();
