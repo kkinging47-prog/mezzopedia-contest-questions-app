@@ -3,8 +3,8 @@
 
 insert into public.app_config (key, value)
 values (
-  'performanceSettings',
-  '{"contestLoadMode":true,"answerSaveDelayMs":1500,"periodicSnapshotMs":45000,"cameraCheckMs":12000,"audioCheckMs":3500,"devtoolsCheckMs":10000,"evidenceCooldownMs":30000,"evidenceImageQuality":0.45,"evidenceMaxWidth":540,"audioClipMs":3000,"requireScreenShareDesktop":true,"allowReducedProctoringOnIOS":true,"maxDataUrlChars":1800000}'::jsonb
+  'runtimeSettings',
+  '{"contestLoadMode":true,"answerSaveDelayMs":1500,"snapshotMs":45000,"cameraCheckMs":12000,"audioCheckMs":3500,"panelCheckMs":10000,"cooldownMs":30000,"imageQuality":0.45,"maxImageWidth":540,"audioClipMs":3000,"requireDesktopScreen":true,"reducedMobileMode":true}'::jsonb
 )
 on conflict (key) do update set value = excluded.value, updated_at = now();
 
