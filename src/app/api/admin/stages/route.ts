@@ -25,29 +25,18 @@ function normalizeStage(stage: unknown) {
 function normalizeSettings(value: unknown): StageSettings {
   const incoming = value && typeof value === 'object' && !Array.isArray(value) ? value as StageSettings : {};
   const merged: StageSettings = {};
-  for (const stage of CONTEST_STAGES) {
-    merged[stage] = {
-      ...DEFAULT_STAGE_SETTINGS[stage],
-      ...(incoming[stage] || {})
-    };
-  }
+  for (const stage of CONTEST_STAGES) merged[stage] = { ...DEFAULT_STAGE_SETTINGS[stage], ...(incoming[stage] || {}) };
   return merged;
 }
 
 async function readStageConfig() {
-  const { data } = await supabaseAdmin
-    .from('app_config')
-    .select('key,value')
-    .in('key', ['activePhase', 'stageSettings']);
-
+  const { data } = await supabaseAdmin.from('app_config').select('key,value').in('key', ['activePhase', 'stageSettings']);
   let activePhase = 'Stage 1';
   let stageSettings = DEFAULT_STAGE_SETTINGS;
-
   for (const row of data || []) {
     if (row.key === 'activePhase') activePhase = normalizeStage(row.value);
     if (row.key === 'stageSettings') stageSettings = normalizeSettings(row.value);
   }
-
   return { activePhase, stageSettings };
 }
 
@@ -134,10 +123,8 @@ export async function POST(request: NextRequest) {
     const openOnlyThisStage = Boolean(body.openOnlyThisStage);
 
     const nextSettings = normalizeSettings(stageSettings);
-    for (const item of CONTEST_STAGES) {
-      if (openOnlyThisStage) {
-        nextSettings[item] = { ...nextSettings[item], isOpen: item === stage, updatedAt: now };
-      }
+    if (openOnlyThisStage) {
+      for (const item of CONTEST_STAGES) nextSettings[item] = { ...nextSettings[item], isOpen: item === stage, updatedAt: now };
     }
     nextSettings[stage] = {
       ...nextSettings[stage],
@@ -150,10 +137,19 @@ export async function POST(request: NextRequest) {
     const error = await writeStageConfig(nextActivePhase, nextSettings);
     if (error) return jsonError(error.message, 500);
 
+    if (openOnlyThisStage) {
+      await supabaseAdmin.from('participants').update({ is_active: false, updated_at: now }).neq('contest_stage', stage).then(() => null);
+    }
+    const { error: participantStatusError } = await supabaseAdmin
+      .from('participants')
+      .update({ is_active: isOpen, updated_at: now })
+      .eq('contest_stage', stage);
+    if (participantStatusError) return jsonError(participantStatusError.message, 500);
+
     await supabaseAdmin.from('admin_audit_logs').insert({
       action: isOpen ? 'OPEN_CONTEST_STAGE' : 'CLOSE_CONTEST_STAGE',
       entity_type: 'stage',
-      details: { stage, isOpen, openOnlyThisStage, nextActivePhase }
+      details: { stage, isOpen, openOnlyThisStage, nextActivePhase, note: 'Stage open/close also updates candidate code access for users assigned to that stage.' }
     }).then(() => null);
 
     return Response.json({ success: true, activePhase: nextActivePhase, stageSettings: nextSettings });
@@ -169,24 +165,25 @@ export async function POST(request: NextRequest) {
 
     const { data: completedRows, error: completedError } = await supabaseAdmin
       .from('contest_sessions')
-      .select('participant_id,contest_stage,status')
+      .select('id,participant_id,contest_stage,status')
       .eq('status', 'completed')
       .eq('contest_stage', fromStage)
       .in('participant_id', participantIds);
     if (completedError) return jsonError(completedError.message, 500);
 
     const completedIds = Array.from(new Set((completedRows || []).map((row: any) => row.participant_id).filter(Boolean)));
+    const completedSessionIds = Array.from(new Set((completedRows || []).map((row: any) => row.id).filter(Boolean)));
     if (!completedIds.length) return jsonError(`None of the selected candidates have completed ${fromStage}.`, 400);
+
+    const { error: archiveError } = await supabaseAdmin
+      .from('contest_sessions')
+      .update({ status: 'expired', updated_at: now, proctoring_summary: { promotedFromStage: fromStage, promotedToStage: toStage, archivedForNextStageLogin: true } })
+      .in('id', completedSessionIds);
+    if (archiveError) return jsonError(archiveError.message, 500);
 
     const { error: participantError } = await supabaseAdmin
       .from('participants')
-      .update({
-        contest_stage: toStage,
-        is_active: true,
-        login_count: 0,
-        last_login_at: null,
-        updated_at: now
-      })
+      .update({ contest_stage: toStage, is_active: true, login_count: 0, last_login_at: null, updated_at: now })
       .in('id', completedIds);
     if (participantError) return jsonError(participantError.message, 500);
 
@@ -200,7 +197,7 @@ export async function POST(request: NextRequest) {
     await supabaseAdmin.from('admin_audit_logs').insert({
       action: 'PROMOTE_QUALIFIED_CANDIDATES',
       entity_type: 'participant',
-      details: { fromStage, toStage, participantIds: completedIds, count: completedIds.length }
+      details: { fromStage, toStage, participantIds: completedIds, completedSessionIds, count: completedIds.length, note: 'Previous completed stage sessions were archived as expired so the same code can begin the next assigned stage.' }
     }).then(() => null);
 
     return Response.json({ success: true, promotedCount: completedIds.length, fromStage, toStage });
