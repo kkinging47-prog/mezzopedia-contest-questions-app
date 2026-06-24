@@ -44,6 +44,7 @@ create table if not exists public.contest_sessions (
   id uuid primary key default gen_random_uuid(),
   participant_id uuid not null references public.participants(id) on delete cascade,
   category text not null,
+  contest_stage text not null default 'Stage 1',
   status text not null default 'in_progress' check (status in ('in_progress', 'completed', 'expired', 'cancelled')),
   started_at timestamptz not null default now(),
   expires_at timestamptz not null,
@@ -96,6 +97,7 @@ create table if not exists public.participant_login_events (
 
 create index if not exists idx_participant_login_events_created_at on public.participant_login_events(created_at desc);
 create index if not exists idx_participant_login_events_participant_id on public.participant_login_events(participant_id);
+create index if not exists idx_contest_sessions_stage_status on public.contest_sessions(contest_stage, status);
 
 create table if not exists public.admin_audit_logs (
   id uuid primary key default gen_random_uuid(),
@@ -113,6 +115,7 @@ insert into public.app_config (key, value) values
   ('bannerImageUrl', '""'),
   ('certificateTemplateUrl', '""'),
   ('activePhase', '"Stage 1"'),
+  ('stageSettings', '{"Stage 1":{"isOpen":true,"note":"Initial online stage"},"Stage 2":{"isOpen":false,"note":"Open after Stage 1 qualification"},"Stage 3":{"isOpen":false,"note":"Open after Stage 2 qualification"}}'::jsonb),
   ('registrationDeadline', '"2026-07-25"')
 on conflict (key) do nothing;
 
@@ -142,12 +145,38 @@ alter table public.admin_audit_logs enable row level security;
 
 -- Migration helpers for existing Supabase projects already created with an older version.
 alter table public.participants add column if not exists contest_stage text not null default 'Stage 1';
+alter table public.contest_sessions add column if not exists contest_stage text not null default 'Stage 1';
 alter table public.contest_sessions add column if not exists active_login_token text;
 alter table public.contest_sessions add column if not exists active_user_agent text;
 alter table public.contest_sessions add column if not exists last_reauth_at timestamptz;
 alter table public.proctoring_events add column if not exists evidence jsonb not null default '{}'::jsonb;
 
--- Close a participant's access automatically after test completion so the same code cannot retake the test.
+-- Ensure each new test session is stamped with the participant's currently assigned stage.
+create or replace function public.set_session_stage_from_participant()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  resolved_stage text;
+begin
+  select contest_stage into resolved_stage
+  from public.participants
+  where id = new.participant_id;
+
+  new.contest_stage := coalesce(resolved_stage, 'Stage 1');
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_set_session_stage_from_participant on public.contest_sessions;
+create trigger trg_set_session_stage_from_participant
+before insert on public.contest_sessions
+for each row
+execute function public.set_session_stage_from_participant();
+
+-- Close a participant's current access automatically after test completion so the same code cannot immediately retake that stage.
 create or replace function public.close_participant_after_completed_session()
 returns trigger
 language plpgsql
