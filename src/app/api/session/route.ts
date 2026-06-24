@@ -3,8 +3,10 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError } from '@/lib/utils';
 import { getActiveParticipantSession } from '@/lib/sessionGuard';
 
+const SESSION_FIELDS = 'id,status,started_at,expires_at,answers,total_questions,question_order,participant_id,active_login_token,participant:participants(id,name,usercode,category,contest_stage)';
+
 export async function GET(request: NextRequest) {
-  const { session, error, status } = await getActiveParticipantSession(request, '*, participant:participants(id,name,usercode,category,contest_stage)');
+  const { session, error, status } = await getActiveParticipantSession(request, SESSION_FIELDS);
   if (error || !session) return jsonError(error || 'Not signed in.', status);
 
   if (session.status !== 'in_progress') return jsonError('This test session is no longer active.', 403);
