@@ -7,6 +7,7 @@ type CompletedRow = {
   id: string;
   participant_id: string;
   category: string;
+  contest_stage?: string | null;
   status: string;
   started_at: string;
   submitted_at: string | null;
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
 
   let query = supabaseAdmin
     .from('contest_sessions')
-    .select('id,participant_id,category,status,started_at,submitted_at,time_used_seconds,score,max_score,total_questions, participant:participants(id,name,usercode,category,payment_status,contest_stage,is_active,login_count,last_login_at)')
+    .select('id,participant_id,category,contest_stage,status,started_at,submitted_at,time_used_seconds,score,max_score,total_questions, participant:participants(id,name,usercode,category,payment_status,contest_stage,is_active,login_count,last_login_at)')
     .eq('status', 'completed')
     .order('submitted_at', { ascending: false, nullsFirst: false });
 
@@ -46,14 +47,15 @@ export async function GET(request: NextRequest) {
   if (error) return jsonError(error.message, 500);
 
   const completedCodes = ((data || []) as unknown as CompletedRow[])
-    .filter(row => !stage || stage === 'All' || row.participant?.contest_stage === stage)
+    .filter(row => !stage || stage === 'All' || (row.contest_stage || 'Stage 1') === stage)
     .map(row => ({
       sessionId: row.id,
       participantId: row.participant_id,
       name: row.participant?.name || '',
       usercode: row.participant?.usercode || '',
       category: row.category || row.participant?.category || '',
-      contestStage: row.participant?.contest_stage || 'Stage 1',
+      contestStage: row.contest_stage || 'Stage 1',
+      currentCodeStage: row.participant?.contest_stage || 'Stage 1',
       paymentStatus: row.participant?.payment_status || '',
       access: row.participant?.is_active ? 'Open' : 'Closed',
       loginCount: row.participant?.login_count || 0,
@@ -85,7 +87,7 @@ export async function POST(request: NextRequest) {
 
     let query = supabaseAdmin
       .from('contest_sessions')
-      .select('participant_id, category, participant:participants(contest_stage)')
+      .select('participant_id, category, contest_stage')
       .eq('status', 'completed');
 
     if (category) query = query.eq('category', category);
@@ -94,7 +96,7 @@ export async function POST(request: NextRequest) {
     if (error) return jsonError(error.message, 500);
 
     participantIds = Array.from(new Set(((data || []) as any[])
-      .filter(row => !stage || row.participant?.contest_stage === stage)
+      .filter(row => !stage || (row.contest_stage || 'Stage 1') === stage)
       .map(row => row.participant_id)
       .filter(Boolean)));
   }
