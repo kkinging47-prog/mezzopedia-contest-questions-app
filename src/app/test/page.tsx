@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { DEFAULT_RUNTIME_SETTINGS } from '@/lib/runtimeSettings';
 
 type Option = { id: string; text: string; imageUrl?: string };
 type Question = { id: string; text: string; imageUrl?: string; options: Option[]; points: number };
@@ -12,6 +13,31 @@ type SessionPayload = {
 
 type Severity = 'low' | 'medium' | 'high' | 'critical';
 type CaptureEvidence = boolean | { images?: boolean; audio?: boolean };
+type RuntimeSettings = typeof DEFAULT_RUNTIME_SETTINGS;
+
+function normalizeRuntimeSettings(value: unknown): RuntimeSettings {
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const d = DEFAULT_RUNTIME_SETTINGS;
+  const num = (key: keyof RuntimeSettings, min: number, max: number) => {
+    const v = Number(raw[key]);
+    return Number.isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : d[key] as number;
+  };
+  const bool = (key: keyof RuntimeSettings) => typeof raw[key] === 'boolean' ? raw[key] as boolean : d[key] as boolean;
+  return {
+    contestLoadMode: bool('contestLoadMode'),
+    answerSaveDelayMs: num('answerSaveDelayMs', 500, 5000),
+    snapshotMs: num('snapshotMs', 15000, 120000),
+    cameraCheckMs: num('cameraCheckMs', 5000, 60000),
+    audioCheckMs: num('audioCheckMs', 2000, 30000),
+    panelCheckMs: num('panelCheckMs', 5000, 60000),
+    cooldownMs: num('cooldownMs', 10000, 180000),
+    imageQuality: Math.min(0.75, Math.max(0.25, Number(raw.imageQuality) || d.imageQuality)),
+    maxImageWidth: num('maxImageWidth', 320, 900),
+    audioClipMs: num('audioClipMs', 1500, 10000),
+    requireDesktopScreen: bool('requireDesktopScreen'),
+    reducedMobileMode: bool('reducedMobileMode')
+  };
+}
 
 export default function TestPage() {
   const router = useRouter();
@@ -22,6 +48,8 @@ export default function TestPage() {
   const [error, setError] = useState('');
   const [timeLeft, setTimeLeft] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [runtime, setRuntime] = useState<RuntimeSettings>(DEFAULT_RUNTIME_SETTINGS);
   const [proctorAccepted, setProctorAccepted] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [audioReady, setAudioReady] = useState(false);
@@ -37,21 +65,24 @@ export default function TestPage() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioRecordingRef = useRef(false);
+  const pendingAnswersRef = useRef<Record<string, string>>({});
+  const answerTimerRef = useRef<number | null>(null);
 
   const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPad|iPhone|iPod/.test(navigator.userAgent);
   const screenCaptureSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices && 'getDisplayMedia' in navigator.mediaDevices;
 
   function captureFromVideo(video: HTMLVideoElement | null) {
     if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return '';
     const canvas = document.createElement('canvas');
-    const maxWidth = 720;
+    const maxWidth = runtime.maxImageWidth;
     const scale = Math.min(1, maxWidth / video.videoWidth);
     canvas.width = Math.max(1, Math.floor(video.videoWidth * scale));
     canvas.height = Math.max(1, Math.floor(video.videoHeight * scale));
     const ctx = canvas.getContext('2d');
     if (!ctx) return '';
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.55);
+    return canvas.toDataURL('image/jpeg', runtime.imageQuality);
   }
 
   function blobToDataUrl(blob: Blob) {
@@ -63,7 +94,7 @@ export default function TestPage() {
     });
   }
 
-  async function recordAudioEvidenceClip(durationMs = 4500) {
+  async function recordAudioEvidenceClip(durationMs = runtime.audioClipMs) {
     const audioTracks = mediaStreamRef.current?.getAudioTracks() || [];
     if (!audioTracks.length || typeof MediaRecorder === 'undefined' || audioRecordingRef.current) return '';
 
@@ -79,9 +110,7 @@ export default function TestPage() {
           if (!chunks.length) return resolve('');
           const blob = new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' });
           resolve(await blobToDataUrl(blob));
-        } catch {
-          resolve('');
-        }
+        } catch { resolve(''); }
       };
 
       try {
@@ -92,9 +121,7 @@ export default function TestPage() {
         recorder.onerror = () => finish(recorder);
         recorder.onstop = () => finish(recorder);
         recorder.start();
-        window.setTimeout(() => {
-          if (recorder.state !== 'inactive') recorder.stop();
-        }, durationMs);
+        window.setTimeout(() => { if (recorder.state !== 'inactive') recorder.stop(); }, durationMs);
       } catch {
         audioRecordingRef.current = false;
         resolve('');
@@ -117,10 +144,36 @@ export default function TestPage() {
     return total / (data.length / 4);
   }
 
+  async function flushPendingAnswers() {
+    const pending = { ...pendingAnswersRef.current };
+    if (!Object.keys(pending).length) return true;
+    pendingAnswersRef.current = {};
+    setSyncing(true);
+    const res = await fetch('/api/session/answer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: pending })
+    }).catch(() => null);
+    setSyncing(false);
+    if (!res || !res.ok) {
+      pendingAnswersRef.current = { ...pending, ...pendingAnswersRef.current };
+      setError('Network issue: your answer is kept on this device and will retry shortly.');
+      return false;
+    }
+    return true;
+  }
+
+  function scheduleAnswerSync() {
+    if (answerTimerRef.current) window.clearTimeout(answerTimerRef.current);
+    answerTimerRef.current = window.setTimeout(() => {
+      flushPendingAnswers().catch(() => setError('Network issue: answer sync will retry.'));
+    }, runtime.answerSaveDelayMs);
+  }
+
   const logViolation = useCallback(async (eventType: string, severity: Severity, details: Record<string, unknown> = {}, captureEvidence: CaptureEvidence = false) => {
     const now = Date.now();
     const key = `${eventType}:${severity}`;
-    const throttleMs = eventType === 'PERIODIC_PROCTORING_SNAPSHOT' ? 9000 : 3000;
+    const throttleMs = eventType === 'PERIODIC_PROCTORING_SNAPSHOT' ? Math.max(15000, runtime.snapshotMs - 1000) : (captureEvidence ? runtime.cooldownMs : 3000);
     if (loggedRef.current[key] && now - loggedRef.current[key] < throttleMs) return;
     loggedRef.current[key] = now;
     if (eventType !== 'PERIODIC_PROCTORING_SNAPSHOT') {
@@ -139,7 +192,6 @@ export default function TestPage() {
       if (faceSnapshotDataUrl) bodyDetails.faceSnapshotDataUrl = faceSnapshotDataUrl;
       if (screenSnapshotDataUrl) bodyDetails.screenSnapshotDataUrl = screenSnapshotDataUrl;
     }
-
     if (captureAudio) {
       const audioEvidenceDataUrl = await recordAudioEvidenceClip();
       if (audioEvidenceDataUrl) bodyDetails.audioEvidenceDataUrl = audioEvidenceDataUrl;
@@ -150,7 +202,14 @@ export default function TestPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ eventType, severity, details: bodyDetails })
     }).catch(() => null);
-  }, [current]);
+  }, [current, runtime]);
+
+  useEffect(() => {
+    fetch('/api/stability')
+      .then(res => res.json())
+      .then(json => setRuntime(normalizeRuntimeSettings(json?.settings)))
+      .catch(() => null);
+  }, []);
 
   useEffect(() => {
     fetch('/api/session')
@@ -179,10 +238,7 @@ export default function TestPage() {
 
   useEffect(() => {
     if (!proctorAccepted) return;
-
-    const onVisibility = () => {
-      if (document.hidden) logViolation('TAB_SWITCH_OR_APP_BACKGROUND', 'high', { documentHidden: true }, true);
-    };
+    const onVisibility = () => { if (document.hidden) logViolation('TAB_SWITCH_OR_APP_BACKGROUND', 'high', { documentHidden: true }, true); };
     const onBlur = () => logViolation('WINDOW_BLUR_OR_EXTERNAL_APP_FOCUS', 'medium', {}, true);
     const onPaste = (event: ClipboardEvent) => { event.preventDefault(); logViolation('PASTE_BLOCKED', 'high', {}, true); };
     const onCopy = (event: ClipboardEvent) => { event.preventDefault(); logViolation('COPY_OR_CUT_BLOCKED', 'medium', {}, true); };
@@ -192,13 +248,9 @@ export default function TestPage() {
       const blocked = event.key === 'F12' || event.key === 'PrintScreen' || shortcut || (event.altKey && event.key === 'Tab');
       if (blocked) { event.preventDefault(); logViolation('BLOCKED_KEYBOARD_SHORTCUT_OR_SCREENSHOT_ATTEMPT', event.key === 'F12' || event.key === 'PrintScreen' ? 'critical' : 'high', { key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, metaKey: event.metaKey }, true); }
     };
-    const onFullscreen = () => {
-      if (!document.fullscreenElement && !isIOS) logViolation('FULLSCREEN_EXITED', 'critical', {}, true);
-    };
+    const onFullscreen = () => { if (!document.fullscreenElement && !isIOS) logViolation('FULLSCREEN_EXITED', 'critical', {}, true); };
     const onResize = () => {
-      if (window.innerWidth < screen.width * 0.65 || window.innerHeight < screen.height * 0.55) {
-        logViolation('POSSIBLE_SPLIT_SCREEN_OR_SMALL_WINDOW', 'high', { innerWidth: window.innerWidth, innerHeight: window.innerHeight, screenWidth: screen.width, screenHeight: screen.height }, true);
-      }
+      if (!isMobile && (window.innerWidth < screen.width * 0.65 || window.innerHeight < screen.height * 0.55)) logViolation('POSSIBLE_SPLIT_SCREEN_OR_SMALL_WINDOW', 'high', { innerWidth: window.innerWidth, innerHeight: window.innerHeight, screenWidth: screen.width, screenHeight: screen.height }, true);
     };
 
     document.addEventListener('visibilitychange', onVisibility);
@@ -213,24 +265,17 @@ export default function TestPage() {
 
     const devtoolsTimer = window.setInterval(() => {
       const threshold = 160;
-      if (window.outerWidth - window.innerWidth > threshold || window.outerHeight - window.innerHeight > threshold) {
-        logViolation('POSSIBLE_DEVTOOLS_OR_SCREEN_OVERLAY_PANEL', 'critical', { innerWidth: window.innerWidth, outerWidth: window.outerWidth, innerHeight: window.innerHeight, outerHeight: window.outerHeight }, true);
-      }
-    }, 5000);
+      if (!isMobile && (window.outerWidth - window.innerWidth > threshold || window.outerHeight - window.innerHeight > threshold)) logViolation('POSSIBLE_DEVTOOLS_OR_SCREEN_OVERLAY_PANEL', 'critical', { innerWidth: window.innerWidth, outerWidth: window.outerWidth, innerHeight: window.innerHeight, outerHeight: window.outerHeight }, true);
+    }, runtime.panelCheckMs);
 
-    const snapshotTimer = window.setInterval(() => {
-      logViolation('PERIODIC_PROCTORING_SNAPSHOT', 'low', { reason: '10-second screen and face evidence capture' }, true);
-    }, 10000);
+    const snapshotTimer = window.setInterval(() => logViolation('PERIODIC_PROCTORING_SNAPSHOT', 'low', { reason: `${Math.round(runtime.snapshotMs / 1000)}-second face/screen check` }, true), runtime.snapshotMs);
 
     const cameraTimer = window.setInterval(() => {
       const brightness = getFaceBrightness();
       const videoTrack = mediaStreamRef.current?.getVideoTracks()[0];
-      if (videoTrack && (videoTrack.muted || videoTrack.readyState !== 'live')) {
-        logViolation('CAMERA_STOPPED_OR_BLOCKED', 'critical', { readyState: videoTrack.readyState, muted: videoTrack.muted }, true);
-      } else if (brightness !== null && brightness < 12) {
-        logViolation('CAMERA_COVERED_OR_TOO_DARK', 'critical', { brightness: Math.round(brightness) }, true);
-      }
-    }, 5000);
+      if (videoTrack && (videoTrack.muted || videoTrack.readyState !== 'live')) logViolation('CAMERA_STOPPED_OR_BLOCKED', 'critical', { readyState: videoTrack.readyState, muted: videoTrack.muted }, true);
+      else if (brightness !== null && brightness < 12) logViolation('CAMERA_COVERED_OR_TOO_DARK', 'critical', { brightness: Math.round(brightness) }, true);
+    }, runtime.cameraCheckMs);
 
     const audioTimer = window.setInterval(() => {
       const analyser = analyserRef.current;
@@ -238,13 +283,10 @@ export default function TestPage() {
       const buffer = new Uint8Array(analyser.fftSize);
       analyser.getByteTimeDomainData(buffer);
       let sum = 0;
-      for (const value of buffer) {
-        const centered = value - 128;
-        sum += centered * centered;
-      }
+      for (const value of buffer) { const centered = value - 128; sum += centered * centered; }
       const rms = Math.sqrt(sum / buffer.length);
       if (rms > 22) logViolation('SURROUNDING_AUDIO_SPIKE_DETECTED', 'medium', { rms: Math.round(rms), explanation: 'The microphone detected a loud sound near the candidate. A short audio clip is saved for review when supported.' }, { images: true, audio: true });
-    }, 2200);
+    }, runtime.audioCheckMs);
 
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
@@ -261,21 +303,16 @@ export default function TestPage() {
       window.clearInterval(cameraTimer);
       window.clearInterval(audioTimer);
     };
-  }, [logViolation, proctorAccepted, isIOS]);
+  }, [logViolation, proctorAccepted, isIOS, isMobile, runtime]);
 
   useEffect(() => {
     if (!proctorAccepted) return;
-    if (videoRef.current && mediaStreamRef.current) {
-      videoRef.current.srcObject = mediaStreamRef.current;
-      videoRef.current.play().catch(() => null);
-    }
-    if (screenVideoRef.current && screenStreamRef.current) {
-      screenVideoRef.current.srcObject = screenStreamRef.current;
-      screenVideoRef.current.play().catch(() => null);
-    }
+    if (videoRef.current && mediaStreamRef.current) { videoRef.current.srcObject = mediaStreamRef.current; videoRef.current.play().catch(() => null); }
+    if (screenVideoRef.current && screenStreamRef.current) { screenVideoRef.current.srcObject = screenStreamRef.current; screenVideoRef.current.play().catch(() => null); }
   }, [proctorAccepted]);
 
   useEffect(() => () => {
+    if (answerTimerRef.current) window.clearTimeout(answerTimerRef.current);
     mediaStreamRef.current?.getTracks().forEach(track => track.stop());
     screenStreamRef.current?.getTracks().forEach(track => track.stop());
     audioContextRef.current?.close().catch(() => null);
@@ -302,17 +339,12 @@ export default function TestPage() {
       source.connect(analyser);
       audioContextRef.current = audioContext;
       analyserRef.current = analyser;
-    } catch {
-      logViolation('AUDIO_MONITOR_SETUP_FAILED', 'medium');
-    }
+    } catch { logViolation('AUDIO_MONITOR_SETUP_FAILED', 'medium'); }
   }
 
   function setupSpeechMonitoring() {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      logViolation('SPEECH_RECOGNITION_NOT_SUPPORTED', 'low');
-      return;
-    }
+    if (!SpeechRecognition) { logViolation('SPEECH_RECOGNITION_NOT_SUPPORTED', 'low'); return; }
     try {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
@@ -321,15 +353,11 @@ export default function TestPage() {
       recognition.onresult = (event: any) => {
         const transcript = Array.from(event.results).map((r: any) => r[0]?.transcript || '').join(' ').toLowerCase();
         const suspiciousWords = ['a', 'b', 'c', 'd', 'one', 'two', 'three', 'four', 'option', 'answer', 'choose'];
-        if (suspiciousWords.some(word => new RegExp(`\\b${word}\\b`, 'i').test(transcript))) {
-          logViolation('POSSIBLE_ANSWER_SPOKEN_OR_EXTERNAL_VOICE', 'high', { transcript: transcript.slice(-220), explanation: 'Speech recognition detected possible answer words or outside voice near the candidate.' }, { images: true, audio: true });
-        }
+        if (suspiciousWords.some(word => new RegExp(`\\b${word}\\b`, 'i').test(transcript))) logViolation('POSSIBLE_ANSWER_SPOKEN_OR_EXTERNAL_VOICE', 'high', { transcript: transcript.slice(-220), explanation: 'Speech recognition detected possible answer words or outside voice near the candidate.' }, { images: true, audio: true });
       };
       recognition.onerror = () => logViolation('SPEECH_RECOGNITION_ERROR', 'low');
       recognition.start();
-    } catch {
-      logViolation('SPEECH_RECOGNITION_START_FAILED', 'low');
-    }
+    } catch { logViolation('SPEECH_RECOGNITION_START_FAILED', 'low'); }
   }
 
   async function startProctoring() {
@@ -337,28 +365,19 @@ export default function TestPage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: true });
       mediaStreamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => null);
-      }
+      if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play().catch(() => null); }
       setCameraReady(stream.getVideoTracks().length > 0);
       setAudioReady(stream.getAudioTracks().length > 0);
       setupAudioMonitoring(stream);
       setupSpeechMonitoring();
 
-      if (screenCaptureSupported && !isIOS) {
+      if (screenCaptureSupported && !isIOS && runtime.requireDesktopScreen) {
         try {
           const screenStream = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: false });
           screenStreamRef.current = screenStream;
-          if (screenVideoRef.current) {
-            screenVideoRef.current.srcObject = screenStream;
-            await screenVideoRef.current.play().catch(() => null);
-          }
+          if (screenVideoRef.current) { screenVideoRef.current.srcObject = screenStream; await screenVideoRef.current.play().catch(() => null); }
           setScreenReady(true);
-          screenStream.getVideoTracks()[0]?.addEventListener('ended', () => {
-            setScreenReady(false);
-            logViolation('SCREEN_SHARE_STOPPED', 'critical', {}, true);
-          });
+          screenStream.getVideoTracks()[0]?.addEventListener('ended', () => { setScreenReady(false); logViolation('SCREEN_SHARE_STOPPED', 'critical', {}, true); });
         } catch {
           setProctorError('Screen sharing is required on laptops/desktops for the national contest. Please allow screen sharing and try again.');
           await logViolation('SCREEN_SHARE_DECLINED', 'critical', {}, true);
@@ -370,12 +389,10 @@ export default function TestPage() {
       await fetch('/api/session/proctoring', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType: 'PROCTORING_STARTED', severity: 'low', details: { camera: true, audio: true, screen: screenCaptureSupported && !isIOS, isIOS } })
+        body: JSON.stringify({ eventType: 'PROCTORING_STARTED', severity: 'low', details: { camera: true, audio: true, screen: screenCaptureSupported && !isIOS, isIOS, runtime } })
       }).catch(() => null);
 
-      if (!isIOS && document.documentElement.requestFullscreen) {
-        await document.documentElement.requestFullscreen().catch(() => logViolation('FULLSCREEN_DECLINED', 'high', {}, true));
-      }
+      if (!isIOS && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen().catch(() => logViolation('FULLSCREEN_DECLINED', 'high', {}, true));
     } catch {
       setProctorError('Camera and microphone permission are required before the test can continue. Please allow them and try again.');
       logViolation('CAMERA_OR_MICROPHONE_DENIED', 'critical');
@@ -385,34 +402,24 @@ export default function TestPage() {
   async function selectAnswer(optionId: string) {
     if (!question) return;
     setAnswers(prev => ({ ...prev, [question.id]: optionId }));
-    await fetch('/api/session/answer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ questionId: question.id, optionId })
-    }).catch(() => setError('Network issue: answer saved locally, but could not sync yet.'));
+    pendingAnswersRef.current[question.id] = optionId;
+    setError('');
+    scheduleAnswerSync();
   }
 
   async function submit(force = false) {
     if (!data || submitting) return;
     const unanswered = data.questions.filter(q => !answers[q.id]).length;
-    if (unanswered && !force) {
-      setError(`You still have ${unanswered} unanswered question(s). Use the question numbers to complete them.`);
-      return;
-    }
+    if (unanswered && !force) { setError(`You still have ${unanswered} unanswered question(s). Use the question numbers to complete them.`); return; }
     setSubmitting(true);
     setError('');
+    if (answerTimerRef.current) window.clearTimeout(answerTimerRef.current);
+    await flushPendingAnswers();
     await logViolation('TEST_SUBMISSION_ATTEMPT', 'low', { force, unanswered }, true);
-    const res = await fetch('/api/session/submit', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ force })
-    });
+    const res = await fetch('/api/session/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force }) });
     const json = await res.json().catch(() => ({}));
     setSubmitting(false);
-    if (!res.ok) {
-      setError(json.error || 'Could not submit test.');
-      return;
-    }
+    if (!res.ok) { setError(json.error || 'Could not submit test.'); return; }
     mediaStreamRef.current?.getTracks().forEach(track => track.stop());
     screenStreamRef.current?.getTracks().forEach(track => track.stop());
     router.push('/results');
@@ -430,10 +437,10 @@ export default function TestPage() {
           <div className="card card-pad">
             <span className="badge">AI Proctored Test</span>
             <h1 style={{ marginTop: 14 }}>Before You Continue</h1>
-            <p>This test monitors camera/microphone permission, repeat logins, tab switching, copy/paste, keyboard shortcuts, fullscreen exits, small/split windows, suspicious browser panels, surrounding audio spikes, possible spoken answer clues, covered camera, and 10-second face/screen evidence snapshots where your browser allows it.</p>
-            <div className="alert alert-info">Camera and microphone access are required. On laptops/desktops, screen sharing is also required. Suspicious audio events save only a short review clip, and face/screen snapshots are saved only as proctoring evidence.</div>
-            <div className="alert alert-info">Browsers cannot secretly detect every external app or overlay unless screen-sharing permission is granted. If screen sharing is stopped, a critical violation is recorded.</div>
-            {isIOS && <div className="alert alert-info">iPhone/iPad users are not forced into fullscreen and may not support screen sharing. Camera and microphone are still required.</div>}
+            <p>This test monitors camera/microphone permission, repeat logins, tab switching, copy/paste, keyboard shortcuts, fullscreen exits, small/split windows, suspicious browser panels, surrounding audio spikes, possible spoken answer clues, covered camera, and periodic face/screen snapshots where your browser allows it.</p>
+            <div className="alert alert-info">For high-traffic contest days, answers are saved in short batches and review snapshots are spaced out to keep the app stable for hundreds of candidates.</div>
+            <div className="alert alert-info">Camera and microphone access are required. On laptops/desktops, screen sharing is also required. Suspicious audio events save only a short review clip.</div>
+            {isIOS && <div className="alert alert-info">iPhone/iPad users are not forced into fullscreen and may not support screen sharing. Camera and microphone are still required. Use Safari/Chrome updated to the latest version.</div>}
             {proctorError && <div className="alert alert-error">{proctorError}</div>}
             <button className="btn btn-primary" onClick={startProctoring}>Allow Camera/Mic/Screen and Begin</button>
           </div>
@@ -449,7 +456,7 @@ export default function TestPage() {
       <div className="proctor no-print">
         <strong>Proctoring Active</strong>
         <div className="small">📹 Camera: {cameraReady ? 'Active' : 'Required'} • 🎤 Audio: {audioReady ? 'Active' : 'Required'} • 🖥️ Screen: {screenReady || isIOS || !screenCaptureSupported ? 'Active/Not supported' : 'Required'}</div>
-        <div className="small">Violations logged: {violations}. Audio clips are saved only when suspicious sound or speech is detected.</div>
+        <div className="small">Violations logged: {violations}. {syncing ? 'Saving answer...' : 'Answers synced in batches.'}</div>
       </div>
 
       <div className="container">
@@ -460,14 +467,8 @@ export default function TestPage() {
 
         <div className="card card-pad">
           <div className="flex between wrap">
-            <div>
-              <span className="badge">{data?.session.participant.category}</span>
-              <h2 style={{ marginTop: 10 }}>Question {current + 1} of {data?.questions.length}</h2>
-            </div>
-            <div style={{ minWidth: 220 }}>
-              <div className="small muted">Answered: {answeredCount}/{data?.questions.length}</div>
-              <div className="progress"><div style={{ width: `${progress}%` }} /></div>
-            </div>
+            <div><span className="badge">{data?.session.participant.category}</span><h2 style={{ marginTop: 10 }}>Question {current + 1} of {data?.questions.length}</h2></div>
+            <div style={{ minWidth: 220 }}><div className="small muted">Answered: {answeredCount}/{data?.questions.length}</div><div className="progress"><div style={{ width: `${progress}%` }} /></div></div>
           </div>
 
           {proctorWarning && <div className="alert alert-error no-print">{proctorWarning}</div>}
@@ -475,36 +476,23 @@ export default function TestPage() {
 
           {question && (
             <section>
-              <p style={{ fontSize: '1.25rem', fontWeight: 800, whiteSpace: 'pre-wrap' }}>{question.text}</p>
+              <p className="test-question-text">{question.text}</p>
               {question.imageUrl && <img src={question.imageUrl} alt="Question" className="question-image" />}
-              <div>
-                {question.options.map(option => (
-                  <button
-                    type="button"
-                    key={option.id}
-                    className={`option ${answers[question.id] === option.id ? 'selected' : ''}`}
-                    onClick={() => selectAnswer(option.id)}
-                  >
-                    <strong>{option.id}.</strong> <span style={{ whiteSpace: 'pre-wrap' }}>{option.text}</span>
-                    {option.imageUrl && <div><img src={option.imageUrl} alt={`Option ${option.id}`} className="question-image" style={{ maxHeight: 120 }} /></div>}
-                  </button>
-                ))}
-              </div>
+              <div>{question.options.map(option => (
+                <button type="button" key={option.id} className={`option ${answers[question.id] === option.id ? 'selected' : ''}`} onClick={() => selectAnswer(option.id)}>
+                  <strong>{option.id}.</strong> <span style={{ whiteSpace: 'pre-wrap' }}>{option.text}</span>
+                  {option.imageUrl && <div><img src={option.imageUrl} alt={`Option ${option.id}`} className="question-image" style={{ maxHeight: 120 }} /></div>}
+                </button>
+              ))}</div>
             </section>
           )}
 
-          <div className="flex between wrap no-print" style={{ marginTop: 20 }}>
+          <div className="flex between wrap no-print sticky-test-actions" style={{ marginTop: 20 }}>
             <button className="btn btn-light" disabled={current === 0} onClick={() => setCurrent(v => Math.max(0, v - 1))}>Previous</button>
-            <div className="flex wrap" style={{ justifyContent: 'center' }}>
-              {data?.questions.map((q, index) => (
-                <button key={q.id} className={`tab ${index === current ? 'active' : ''}`} onClick={() => setCurrent(index)} style={{ background: answers[q.id] && index !== current ? '#0f8a4b' : undefined, color: answers[q.id] && index !== current ? 'white' : undefined }}>{index + 1}</button>
-              ))}
-            </div>
-            {current + 1 < (data?.questions.length || 0) ? (
-              <button className="btn btn-primary" onClick={() => setCurrent(v => v + 1)}>Next</button>
-            ) : (
-              <button className="btn btn-success" disabled={submitting} onClick={() => submit(false)}>{submitting ? 'Submitting...' : 'Submit Test'}</button>
-            )}
+            <div className="flex wrap question-nav" style={{ justifyContent: 'center' }}>{data?.questions.map((q, index) => (
+              <button key={q.id} className={`tab ${index === current ? 'active' : ''}`} onClick={() => setCurrent(index)} style={{ background: answers[q.id] && index !== current ? '#0f8a4b' : undefined, color: answers[q.id] && index !== current ? 'white' : undefined }}>{index + 1}</button>
+            ))}</div>
+            {current + 1 < (data?.questions.length || 0) ? <button className="btn btn-primary" onClick={() => setCurrent(v => v + 1)}>Next</button> : <button className="btn btn-success" disabled={submitting} onClick={() => submit(false)}>{submitting ? 'Submitting...' : 'Submit Test'}</button>}
           </div>
         </div>
       </div>
