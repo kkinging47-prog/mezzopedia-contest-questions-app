@@ -84,7 +84,7 @@ export default function QuestionSettingsPage() {
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) { setError(json.error || 'Could not seed questions.'); return; }
-    setMessage(`Seed complete for ${seedStage}. Inserted ${json.inserted || 0}; skipped ${json.skipped || 0}. Each category now has the seeded 15-question bank where missing.`);
+    setMessage(`Seed complete for ${seedStage}. Inserted ${json.inserted || 0}; skipped ${json.skipped || 0}. Each category now has the seeded 50-question bank where missing.`);
   }
 
   if (error && !ready) {
@@ -97,6 +97,7 @@ export default function QuestionSettingsPage() {
         <nav className="nav flex between wrap">
           <strong>Question Bank Settings</strong>
           <div className="flex wrap">
+            <a className="btn btn-light" href="/admin/questions">Questions Filter</a>
             <a className="btn btn-light" href="/admin/performance">Performance</a>
             <a className="btn btn-light" href="/admin/stages">Stages</a>
             <a className="btn btn-primary" href="/admin">Back to Admin</a>
@@ -143,11 +144,11 @@ export default function QuestionSettingsPage() {
         </div>
 
         <div className="card card-pad" style={{ marginTop: 18 }}>
-          <h2>Seed 15 questions per category</h2>
-          <p className="muted">This inserts 15 seed questions for every category in the selected stage: 5 Algebra, 3 Aptitude, 4 Statistics and 3 Geometry. It skips questions that already exist, so it is safe to run again.</p>
+          <h2>Seed 50 questions per category</h2>
+          <p className="muted">This inserts 50 seed questions for every category in the selected stage: 20 Algebra, 10 Aptitude, 10 Statistics and 10 Geometry. It skips questions that already exist, so it is safe to run again.</p>
           <div className="flex wrap">
             <label style={{ minWidth: 220 }}><span className="label">Stage to seed</span><select className="select" value={seedStage} onChange={e => setSeedStage(e.target.value)}>{CONTEST_STAGES.map(stage => <option key={stage}>{stage}</option>)}</select></label>
-            <button className="btn btn-primary" type="button" onClick={seedQuestions}>Seed Questions for Selected Stage</button>
+            <button className="btn btn-primary" type="button" onClick={seedQuestions}>Seed 50 Questions for Selected Stage</button>
           </div>
         </div>
       </div>
