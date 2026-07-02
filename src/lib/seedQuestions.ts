@@ -27,7 +27,8 @@ function addQuestion(rows: SeedQuestion[], category: string, phase: string, topi
   rows.push({
     category,
     phase,
-    question_text: `[${topic}] ${text}`,
+    // Do not show the question type/topic to candidates.
+    question_text: text,
     options: optionSet(correct, distractors, correctId),
     correct_option_id: correctId,
     explanation: `Seeded Mezzopedia ${topic} question. Correct answer: ${correct}.`,
