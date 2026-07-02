@@ -24,8 +24,10 @@ export async function GET(request: NextRequest) {
   if (!admin) return jsonError('Unauthorized.', 401);
 
   const category = request.nextUrl.searchParams.get('category');
+  const phase = request.nextUrl.searchParams.get('phase') || request.nextUrl.searchParams.get('stage');
   let query = supabaseAdmin.from('questions').select('*').order('created_at', { ascending: false });
-  if (category) query = query.eq('category', category);
+  if (category && category !== 'All') query = query.eq('category', category);
+  if (phase && phase !== 'All') query = query.eq('phase', phase);
   const { data, error } = await query;
   if (error) return jsonError(error.message, 500);
   return Response.json({ success: true, questions: data || [] });
