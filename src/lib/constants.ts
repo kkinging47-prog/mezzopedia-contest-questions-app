@@ -12,9 +12,10 @@ export const DEFAULT_CATEGORIES = [
 
 export const CONTEST_STAGES = ['Stage 1', 'Stage 2', 'Stage 3'] as const;
 export const PAYMENT_STATUSES = ['paid', 'unpaid'] as const;
+export const QUESTION_COUNT_OPTIONS = [10,20,30,40,50,60,70,80,90,100] as const;
 
 export const TEST_DURATION_MINUTES = 70;
-export const QUESTIONS_PER_TEST = 80;
+export const QUESTIONS_PER_TEST = 10;
 
 export const COOKIE_NAMES = {
   admin: 'mezzopedia_admin_token',
