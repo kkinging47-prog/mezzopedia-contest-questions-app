@@ -35,11 +35,12 @@ export default function AdminQuickLinks() {
             background: 'rgba(255,255,255,0.96)',
             boxShadow: '0 14px 40px rgba(15, 23, 42, 0.18)',
             border: '1px solid rgba(148, 163, 184, 0.35)',
-            maxWidth: 560
+            maxWidth: 640
           }}
         >
           <a className="btn btn-light" href="/admin">Admin</a>
-          <a className="btn btn-primary" href="/admin/question-settings">Question Settings</a>
+          <a className="btn btn-primary" href="/admin/questions">Questions Filter</a>
+          <a className="btn btn-light" href="/admin/question-settings">Question Settings</a>
           <a className="btn btn-light" href="/admin/stages">Stages</a>
           <a className="btn btn-light" href="/admin/performance">Performance</a>
           <a className="btn btn-success" href="/admin/completed-codes">Completed Codes / Reset</a>
