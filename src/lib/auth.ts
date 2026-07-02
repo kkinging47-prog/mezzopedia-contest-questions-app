@@ -13,6 +13,12 @@ function getJwtSecret() {
   return encoder.encode(secret);
 }
 
+function getPasswordHashRounds() {
+  const value = Number(process.env.PASSWORD_HASH_ROUNDS || 10);
+  if (!Number.isFinite(value)) return 10;
+  return Math.min(12, Math.max(8, Math.round(value)));
+}
+
 export type AdminTokenPayload = {
   type: 'admin';
   email: string;
@@ -26,7 +32,9 @@ export type ParticipantTokenPayload = {
 };
 
 export async function hashPassword(password: string) {
-  return bcrypt.hash(password, 12);
+  // bcryptjs cost 12 is too slow for bulk participant imports on serverless functions.
+  // Existing hashes still verify, while new imports use a stable configurable cost.
+  return bcrypt.hash(password, getPasswordHashRounds());
 }
 
 export async function verifyPassword(password: string, hash: string) {
