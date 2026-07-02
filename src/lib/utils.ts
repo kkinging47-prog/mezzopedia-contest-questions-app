@@ -1,3 +1,5 @@
+import { CONTEST_STAGES } from './constants';
+
 export function jsonError(message: string, status = 400) {
   return Response.json({ success: false, error: message }, { status });
 }
@@ -22,6 +24,12 @@ export function percentage(score: number, total: number) {
 
 export function normalizeCategory(category: string) {
   return category.trim();
+}
+
+export function normalizeContestStage(value: unknown) {
+  const raw = String(value || '').trim();
+  const match = CONTEST_STAGES.find(stage => stage.toLowerCase() === raw.toLowerCase());
+  return match || 'Stage 1';
 }
 
 export function safeText(value: unknown) {
