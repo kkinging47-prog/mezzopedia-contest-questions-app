@@ -5,6 +5,16 @@ import { jsonError, safeText } from '@/lib/utils';
 import { buildSeedQuestions } from '@/lib/seedQuestions';
 import { CONTEST_STAGES } from '@/lib/constants';
 
+const OLD_TOPIC_PREFIXES = ['[Algebra] ', '[Aptitude] ', '[Statistics] ', '[Geometry] '];
+
+function oldPrefixedVariants(text: string) {
+  return OLD_TOPIC_PREFIXES.map(prefix => `${prefix}${text}`);
+}
+
+function normalizedText(text: string) {
+  return OLD_TOPIC_PREFIXES.reduce((value, prefix) => value.startsWith(prefix) ? value.slice(prefix.length) : value, text);
+}
+
 export async function POST(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) return jsonError('Unauthorized.', 401);
@@ -14,7 +24,7 @@ export async function POST(request: NextRequest) {
   if (!(CONTEST_STAGES as readonly string[]).includes(phase)) return jsonError('Invalid stage selected.');
 
   const seeded = buildSeedQuestions(phase);
-  const texts = seeded.map(q => q.question_text);
+  const texts = seeded.flatMap(q => [q.question_text, ...oldPrefixedVariants(q.question_text)]);
   const { data: existing, error: existingError } = await supabaseAdmin
     .from('questions')
     .select('category,phase,question_text')
@@ -23,7 +33,7 @@ export async function POST(request: NextRequest) {
 
   if (existingError) return jsonError(existingError.message, 500);
 
-  const existingKeys = new Set((existing || []).map((row: any) => `${row.category}|${row.phase}|${row.question_text}`));
+  const existingKeys = new Set((existing || []).map((row: any) => `${row.category}|${row.phase}|${normalizedText(row.question_text)}`));
   const rowsToInsert = seeded.filter(q => !existingKeys.has(`${q.category}|${q.phase}|${q.question_text}`));
 
   if (!rowsToInsert.length) {
