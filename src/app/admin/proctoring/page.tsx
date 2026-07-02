@@ -6,6 +6,9 @@ type Evidence = {
   faceSnapshotUrl?: string;
   screenSnapshotUrl?: string;
   audioEvidenceUrl?: string;
+  faceSnapshotDownloadUrl?: string;
+  screenSnapshotDownloadUrl?: string;
+  audioEvidenceDownloadUrl?: string;
   faceSnapshotPath?: string;
   screenSnapshotPath?: string;
   audioEvidencePath?: string;
@@ -29,7 +32,7 @@ type ProctorEvent = {
 
 const EVENT_EXPLANATIONS: Record<string, string> = {
   PROCTORING_STARTED: 'The candidate allowed proctoring permissions and started the monitored test session.',
-  PERIODIC_PROCTORING_SNAPSHOT: 'Regular 10-second evidence snapshot captured from camera and screen where available.',
+  PERIODIC_PROCTORING_SNAPSHOT: 'Regular evidence snapshot captured from camera and screen where available.',
   TAB_SWITCH_OR_APP_BACKGROUND: 'The candidate left the test tab or the app went into the background.',
   WINDOW_BLUR_OR_EXTERNAL_APP_FOCUS: 'The test window lost focus, which may mean another app or browser window was opened.',
   PASTE_BLOCKED: 'The candidate attempted to paste content into the test page. The paste action was blocked.',
@@ -115,10 +118,10 @@ export default function AdminProctoringReviewPage() {
         <section className="card card-pad" style={{ marginTop: 18 }}>
           <h1>Clear Explanation of Proctoring Records</h1>
           <div className="grid grid-2">
-            <div className="alert alert-info"><strong>Face evidence</strong><br />Camera snapshots help confirm the candidate was present and that the camera was not covered.</div>
+            <div className="alert alert-info"><strong>Face evidence</strong><br />Camera snapshots help confirm the candidate was present and that the camera was not covered. Use View or Download.</div>
             <div className="alert alert-info"><strong>Screen evidence</strong><br />Screen snapshots help show whether the candidate stayed on the test page. This only works when screen sharing is allowed.</div>
-            <div className="alert alert-info"><strong>Audio evidence</strong><br />Short clips are saved only when suspicious sound or possible spoken answers are detected. Use the audio player to listen later.</div>
-            <div className="alert alert-info"><strong>Severity</strong><br />Critical and High events should be reviewed before finalizing a candidate’s result. Low events are mostly routine monitoring logs.</div>
+            <div className="alert alert-info"><strong>Audio evidence</strong><br />Short clips are saved only when suspicious sound or possible spoken answers are detected. If nobody speaks or makes a loud sound, no audio clip is created.</div>
+            <div className="alert alert-info"><strong>Download</strong><br />Evidence links expire after about one hour for security. Click Refresh to generate fresh download links.</div>
           </div>
         </section>
 
@@ -162,9 +165,12 @@ function EvidenceViewer({ evidence }: { evidence: Evidence }) {
   if (!hasEvidence) return <span className="small muted">No file saved</span>;
   return <div className="grid" style={{ gap: 8 }}>
     <div className="flex wrap">
-      {evidence.faceSnapshotUrl && <a className="btn btn-light" href={evidence.faceSnapshotUrl} target="_blank">View Face</a>}
-      {evidence.screenSnapshotUrl && <a className="btn btn-light" href={evidence.screenSnapshotUrl} target="_blank">View Screen</a>}
-      {evidence.audioEvidenceUrl && <a className="btn btn-light" href={evidence.audioEvidenceUrl} target="_blank">Open Audio</a>}
+      {evidence.faceSnapshotUrl && <a className="btn btn-light" href={evidence.faceSnapshotUrl} target="_blank" rel="noreferrer">View Face</a>}
+      {evidence.faceSnapshotDownloadUrl && <a className="btn btn-success" href={evidence.faceSnapshotDownloadUrl}>Download Face</a>}
+      {evidence.screenSnapshotUrl && <a className="btn btn-light" href={evidence.screenSnapshotUrl} target="_blank" rel="noreferrer">View Screen</a>}
+      {evidence.screenSnapshotDownloadUrl && <a className="btn btn-success" href={evidence.screenSnapshotDownloadUrl}>Download Screen</a>}
+      {evidence.audioEvidenceUrl && <a className="btn btn-light" href={evidence.audioEvidenceUrl} target="_blank" rel="noreferrer">Open Audio</a>}
+      {evidence.audioEvidenceDownloadUrl && <a className="btn btn-success" href={evidence.audioEvidenceDownloadUrl}>Download Audio</a>}
     </div>
     {evidence.audioEvidenceUrl && <audio controls preload="none" src={evidence.audioEvidenceUrl} style={{ width: 260 }} />}
   </div>;
