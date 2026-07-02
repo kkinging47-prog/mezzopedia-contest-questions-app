@@ -4,6 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { jsPDF } from 'jspdf';
 import { DEFAULT_CATEGORIES } from '@/lib/constants';
+import { CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, downloadCertificate, normalizeCertificateSettings } from '@/lib/certificatePdf';
 
 type Result = {
   participant: { name: string; usercode: string; category: string; paymentStatus: string };
@@ -24,11 +25,13 @@ export default function ResultsPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
+  const [certificateSettings, setCertificateSettings] = useState<Required<CertificateSettings>>(DEFAULT_CERTIFICATE_SETTINGS);
 
   const analysis = useMemo(() => result ? createAnalysis(result) : null, [result]);
 
   useEffect(() => {
     fetch('/api/auth/participant/logout', { method: 'POST' }).catch(() => null);
+    fetch('/api/certificate-settings').then(r => r.json()).then(json => setCertificateSettings(normalizeCertificateSettings(json.settings))).catch(() => null);
   }, []);
 
   async function lookup(event: FormEvent) {
@@ -69,13 +72,18 @@ export default function ResultsPage() {
     doc.save(`mezzopedia-result-${result.participant.usercode}.pdf`);
   }
 
+  async function downloadCertificatePdf() {
+    if (!result) return;
+    await downloadCertificate({ name: result.participant.name, category: result.participant.category, usercode: result.participant.usercode }, certificateSettings);
+  }
+
   return (
     <main className="math-bg centered">
       <div className="container" style={{ maxWidth: 900 }}>
         <div className="card card-pad">
           <div className="flex between wrap no-print">
             <Link href="/" className="badge">← Back to Home</Link>
-            {result && <div className="flex wrap"><button className="btn btn-light" onClick={() => window.print()}>Print</button><button className="btn btn-primary" onClick={downloadPdf}>Download PDF</button></div>}
+            {result && <div className="flex wrap"><button className="btn btn-light" onClick={() => window.print()}>Print</button><button className="btn btn-primary" onClick={downloadPdf}>Download Result PDF</button><button className="btn btn-success" onClick={downloadCertificatePdf}>Download Certificate PDF</button></div>}
           </div>
 
           {!result ? (
@@ -108,6 +116,7 @@ export default function ResultsPage() {
                 <p>{analysis?.advice}</p>
                 <p className="small muted">Proctoring risk: {result.proctoringSummary?.riskLevel || 'LOW'} • Events logged: {result.proctoringSummary?.total || 0}</p>
               </div>
+              <div className="alert alert-info no-print" style={{ marginTop: 18 }}>You can download your official certificate of participation as a PDF using the button above.</div>
             </section>
           )}
         </div>
@@ -145,8 +154,6 @@ function createAnalysis(result: Result) {
     summary = 'The score shows that the candidate needs stronger preparation before the next contest stage.';
     advice = 'The candidate should revise core concepts, practice daily and attempt more guided problem solving.';
   }
-  if (risk === 'CRITICAL' || risk === 'HIGH') {
-    advice += ' The proctoring record requires administrative review before final confirmation.';
-  }
+  if (risk === 'CRITICAL' || risk === 'HIGH') advice += ' The proctoring record requires administrative review before final confirmation.';
   return { summary, advice };
 }
