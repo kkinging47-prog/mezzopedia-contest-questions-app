@@ -5,11 +5,20 @@ import { jsonError } from '@/lib/utils';
 
 const EVIDENCE_BUCKET = 'proctoring-evidence';
 
-async function signedUrl(path?: string) {
+function fileNameFromPath(path: string) {
+  return path.split('/').pop() || 'proctoring-evidence';
+}
+
+async function signedUrl(path?: string, download = false) {
   if (!path || typeof path !== 'string') return '';
   // Old evidence records may already contain public URLs. Keep them working.
   if (path.startsWith('http://') || path.startsWith('https://')) return path;
-  const { data, error } = await supabaseAdmin.storage.from(EVIDENCE_BUCKET).createSignedUrl(path, 60 * 60);
+
+  const options = download ? { download: fileNameFromPath(path) } : undefined;
+  const { data, error } = await supabaseAdmin.storage
+    .from(EVIDENCE_BUCKET)
+    .createSignedUrl(path, 60 * 60, options as any);
+
   if (error) return '';
   return data?.signedUrl || '';
 }
@@ -31,6 +40,9 @@ export async function GET(request: NextRequest) {
     const faceSnapshotUrl = evidence.faceSnapshotUrl || await signedUrl(evidence.faceSnapshotPath);
     const screenSnapshotUrl = evidence.screenSnapshotUrl || await signedUrl(evidence.screenSnapshotPath);
     const audioEvidenceUrl = evidence.audioEvidenceUrl || await signedUrl(evidence.audioEvidencePath);
+    const faceSnapshotDownloadUrl = evidence.faceSnapshotDownloadUrl || await signedUrl(evidence.faceSnapshotPath, true);
+    const screenSnapshotDownloadUrl = evidence.screenSnapshotDownloadUrl || await signedUrl(evidence.screenSnapshotPath, true);
+    const audioEvidenceDownloadUrl = evidence.audioEvidenceDownloadUrl || await signedUrl(evidence.audioEvidencePath, true);
 
     return {
       id: row.id,
@@ -41,7 +53,10 @@ export async function GET(request: NextRequest) {
         ...evidence,
         ...(faceSnapshotUrl ? { faceSnapshotUrl } : {}),
         ...(screenSnapshotUrl ? { screenSnapshotUrl } : {}),
-        ...(audioEvidenceUrl ? { audioEvidenceUrl } : {})
+        ...(audioEvidenceUrl ? { audioEvidenceUrl } : {}),
+        ...(faceSnapshotDownloadUrl ? { faceSnapshotDownloadUrl } : {}),
+        ...(screenSnapshotDownloadUrl ? { screenSnapshotDownloadUrl } : {}),
+        ...(audioEvidenceDownloadUrl ? { audioEvidenceDownloadUrl } : {})
       },
       userAgent: row.user_agent || '',
       ipAddress: row.ip_address || '',
