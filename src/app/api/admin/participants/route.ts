@@ -3,6 +3,10 @@ import { requireAdmin, hashPassword } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, safeText } from '@/lib/utils';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
 type StageSettings = Record<string, { isOpen?: boolean }>;
 
 type ParticipantInput = {
@@ -60,6 +64,43 @@ function cleanParticipantInput(item: ParticipantInput, stageSettings: StageSetti
   };
 }
 
+async function buildParticipantRow(clean: ReturnType<typeof cleanParticipantInput>) {
+  if (!clean) return null;
+  return {
+    category: clean.category,
+    name: clean.name,
+    usercode: clean.usercode,
+    password_hash: await hashPassword(clean.password),
+    payment_status: clean.paymentStatus,
+    contest_stage: clean.contestStage,
+    is_active: clean.isActive
+  };
+}
+
+async function buildRowsInSmallBatches(items: ParticipantInput[], stageSettings: StageSettings) {
+  const cleaned = items.map(item => cleanParticipantInput(item, stageSettings)).filter(Boolean) as NonNullable<ReturnType<typeof cleanParticipantInput>>[];
+  const rows: NonNullable<Awaited<ReturnType<typeof buildParticipantRow>>>[] = [];
+  const concurrency = 8;
+
+  for (let i = 0; i < cleaned.length; i += concurrency) {
+    const chunk = cleaned.slice(i, i + concurrency);
+    const built = await Promise.all(chunk.map(item => buildParticipantRow(item)));
+    for (const row of built) if (row) rows.push(row);
+  }
+
+  return rows;
+}
+
+async function upsertRowsInChunks(rows: NonNullable<Awaited<ReturnType<typeof buildParticipantRow>>>[]) {
+  const chunkSize = 200;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    const { error } = await supabaseAdmin.from('participants').upsert(chunk, { onConflict: 'category,usercode' });
+    if (error) return error;
+  }
+  return null;
+}
+
 export async function GET(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) return jsonError('Unauthorized.', 401);
@@ -89,23 +130,10 @@ export async function POST(request: NextRequest) {
     const stageSettings = await getStageOpenMap();
 
     if (Array.isArray(body.participants)) {
-      const rows = [];
-      for (const item of body.participants as ParticipantInput[]) {
-        const clean = cleanParticipantInput(item, stageSettings);
-        if (!clean) continue;
-        rows.push({
-          category: clean.category,
-          name: clean.name,
-          usercode: clean.usercode,
-          password_hash: await hashPassword(clean.password),
-          payment_status: clean.paymentStatus,
-          contest_stage: clean.contestStage,
-          is_active: clean.isActive
-        });
-      }
+      const rows = await buildRowsInSmallBatches(body.participants as ParticipantInput[], stageSettings);
       if (!rows.length) return jsonError('No valid participants found. Check category, name, usercode and password.');
 
-      const { error } = await supabaseAdmin.from('participants').upsert(rows, { onConflict: 'category,usercode' });
+      const error = await upsertRowsInChunks(rows);
       if (error) return jsonError(error.message, 500);
       return Response.json({ success: true, imported: rows.length });
     }
@@ -113,17 +141,12 @@ export async function POST(request: NextRequest) {
     const clean = cleanParticipantInput(body as ParticipantInput, stageSettings);
     if (!clean) return jsonError('Category, name, usercode and password are required.');
 
+    const row = await buildParticipantRow(clean);
+    if (!row) return jsonError('Category, name, usercode and password are required.');
+
     const { data, error } = await supabaseAdmin
       .from('participants')
-      .insert({
-        category: clean.category,
-        name: clean.name,
-        usercode: clean.usercode,
-        password_hash: await hashPassword(clean.password),
-        payment_status: clean.paymentStatus,
-        contest_stage: clean.contestStage,
-        is_active: clean.isActive
-      })
+      .insert(row)
       .select('id,name,usercode,category,payment_status,contest_stage,is_active')
       .single();
 
@@ -135,6 +158,6 @@ export async function POST(request: NextRequest) {
     return Response.json({ success: true, participant: data });
   } catch (error) {
     console.error('Participants POST failed:', error);
-    return jsonError('Could not save participant because the server could not reach Supabase. Confirm Vercel environment variables and redeploy.', 500);
+    return jsonError('Could not save participant because the server could not reach Supabase or the request timed out. Try saving fewer records at a time, confirm Vercel environment variables, then redeploy.', 500);
   }
 }
