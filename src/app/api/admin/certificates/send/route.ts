@@ -9,6 +9,25 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
+type CertificateParticipant = {
+  name?: string;
+  usercode?: string;
+  email?: string;
+  category?: string;
+};
+
+type CertificateSessionRow = {
+  id: string;
+  category?: string;
+  status?: string;
+  participant?: CertificateParticipant | CertificateParticipant[] | null;
+};
+
+function getParticipant(value: CertificateSessionRow['participant']): CertificateParticipant {
+  if (Array.isArray(value)) return value[0] || {};
+  return value || {};
+}
+
 function hexToRgb(hex: string) {
   const cleaned = hex.replace('#', '').trim();
   if (!/^([0-9a-f]{6})$/i.test(cleaned)) return { r: 0, g: 31, b: 77 };
@@ -82,11 +101,13 @@ export async function POST(request: NextRequest) {
 
   let sent = 0;
   const failed: string[] = [];
-  for (const row of data || []) {
-    const name = row.participant?.name || '';
-    const category = row.category || row.participant?.category || '';
-    const email = row.participant?.email || '';
-    const usercode = row.participant?.usercode || '';
+  for (const rawRow of data || []) {
+    const row = rawRow as CertificateSessionRow;
+    const participant = getParticipant(row.participant);
+    const name = participant.name || '';
+    const category = row.category || participant.category || '';
+    const email = participant.email || '';
+    const usercode = participant.usercode || '';
     if (!email) { failed.push(`${name || usercode}: no email`); continue; }
 
     const pdf = await certificatePdfBase64(name, category, settings);
