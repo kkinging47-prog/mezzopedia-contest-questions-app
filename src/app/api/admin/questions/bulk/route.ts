@@ -9,6 +9,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 type BulkOption = { id: string; text: string; imageUrl?: string };
+type CleanRowResult = { error: string; row?: never } | { row: Record<string, unknown>; error?: never };
 type BulkQuestionInput = {
   questionNo?: unknown;
   source_question_no?: unknown;
@@ -63,7 +64,7 @@ function option(id: string, text: unknown, imageUrl: unknown): BulkOption | null
   return { id, text: cleanText, ...(cleanImage ? { imageUrl: cleanImage } : {}) };
 }
 
-function cleanRow(row: BulkQuestionInput) {
+function cleanRow(row: BulkQuestionInput): CleanRowResult {
   const category = normalizeCategory(row.category);
   const phase = normalizeContestStage(row.stage || row.phase || 'Stage 1');
   const questionText = safeText(row.questionText || row.question_text);
@@ -103,7 +104,7 @@ function cleanRow(row: BulkQuestionInput) {
   };
 }
 
-async function insertInChunks(rows: any[]) {
+async function insertInChunks(rows: Record<string, unknown>[]) {
   let inserted = 0;
   for (let i = 0; i < rows.length; i += 100) {
     const chunk = rows.slice(i, i + 100);
@@ -122,18 +123,18 @@ export async function POST(request: NextRequest) {
   const incoming = Array.isArray(body.questions) ? body.questions : [];
   if (!incoming.length) return jsonError('No questions found to import.');
 
-  const cleanedRows: any[] = [];
+  const cleanedRows: Record<string, unknown>[] = [];
   const errors: string[] = [];
   for (const item of incoming) {
     const cleaned = cleanRow(item as BulkQuestionInput);
-    if ('error' in cleaned) errors.push(cleaned.error);
+    if (cleaned.error) errors.push(cleaned.error);
     else cleanedRows.push(cleaned.row);
   }
 
   if (errors.length) return jsonError(errors.slice(0, 20).join(' | '), 400);
   if (!cleanedRows.length) return jsonError('No valid questions found.');
 
-  const stages = Array.from(new Set(cleanedRows.map(row => row.phase)));
+  const stages = Array.from(new Set(cleanedRows.map(row => String(row.phase))));
   const { data: existing, error: existingError } = await supabaseAdmin
     .from('questions')
     .select('category,phase,question_text')
@@ -141,7 +142,7 @@ export async function POST(request: NextRequest) {
   if (existingError) return jsonError(existingError.message, 500);
 
   const existingKeys = new Set((existing || []).map((row: any) => `${row.category}|${row.phase}|${String(row.question_text || '').trim().toLowerCase()}`));
-  const rowsToInsert = cleanedRows.filter(row => !existingKeys.has(`${row.category}|${row.phase}|${row.question_text.trim().toLowerCase()}`));
+  const rowsToInsert = cleanedRows.filter(row => !existingKeys.has(`${row.category}|${row.phase}|${String(row.question_text).trim().toLowerCase()}`));
   const skipped = cleanedRows.length - rowsToInsert.length;
 
   if (!rowsToInsert.length) return Response.json({ success: true, inserted: 0, skipped, message: 'All imported questions already exist for the selected stage/category.' });
