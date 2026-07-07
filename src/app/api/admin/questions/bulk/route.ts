@@ -127,8 +127,11 @@ export async function POST(request: NextRequest) {
   const errors: string[] = [];
   for (const item of incoming) {
     const cleaned = cleanRow(item as BulkQuestionInput);
-    if (cleaned.error) errors.push(cleaned.error);
-    else cleanedRows.push(cleaned.row);
+    if (cleaned.error) {
+      errors.push(cleaned.error);
+    } else if (cleaned.row) {
+      cleanedRows.push(cleaned.row);
+    }
   }
 
   if (errors.length) return jsonError(errors.slice(0, 20).join(' | '), 400);
