@@ -34,13 +34,27 @@ function hexToRgb(hex: string) {
   return { r: parseInt(cleaned.slice(0, 2), 16), g: parseInt(cleaned.slice(2, 4), 16), b: parseInt(cleaned.slice(4, 6), 16) };
 }
 
-function formatDate(dateValue: string) {
+function dateParts(dateValue: string) {
   const date = new Date(`${dateValue}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return dateValue;
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const year = String(date.getFullYear()).slice(-2);
-  return `${day}/${month}/${year}`;
+  if (Number.isNaN(date.getTime())) {
+    const parts = String(dateValue || '').split(/[\/\-.]/).map(part => part.trim()).filter(Boolean);
+    if (parts.length >= 3) return { day: parts[0].padStart(2, '0').slice(-2), month: parts[1].padStart(2, '0').slice(-2), year: parts[2].slice(-2) };
+    return null;
+  }
+  return {
+    day: String(date.getDate()).padStart(2, '0'),
+    month: String(date.getMonth() + 1).padStart(2, '0'),
+    year: String(date.getFullYear()).slice(-2)
+  };
+}
+
+function drawDateInTemplateSpaces(doc: jsPDF, dateValue: string, centerX: number, y: number) {
+  const parts = dateParts(dateValue);
+  if (!parts) return;
+  const spacing = 14;
+  doc.text(parts.day, centerX - spacing, y, { align: 'center', maxWidth: 12 });
+  doc.text(parts.month, centerX, y, { align: 'center', maxWidth: 12 });
+  doc.text(parts.year, centerX + spacing, y, { align: 'center', maxWidth: 12 });
 }
 
 async function imageToDataUrl(url: string) {
@@ -73,7 +87,7 @@ async function certificatePdfBase64(name: string, category: string, settings: Re
   doc.setFontSize(settings.categoryFontSize);
   doc.text(category, settings.categoryX, settings.categoryY, { align: 'center', maxWidth: 220 });
   doc.setFontSize(settings.dateFontSize);
-  doc.text(formatDate(settings.certificateDate), settings.dateX, settings.dateY, { align: 'center', maxWidth: 180 });
+  drawDateInTemplateSpaces(doc, settings.certificateDate, settings.dateX, settings.dateY);
 
   return Buffer.from(doc.output('arraybuffer')).toString('base64');
 }
