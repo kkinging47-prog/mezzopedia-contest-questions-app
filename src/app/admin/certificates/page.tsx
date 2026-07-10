@@ -6,6 +6,41 @@ import { CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, downloadCertificate,
 type Candidate = { sessionId: string; name: string; usercode: string; category: string; email?: string; submittedAt?: string };
 type ConfigRow = { key: string; value: unknown };
 
+const MAX_CERTIFICATE_IMAGE_SIZE = 15 * 1024 * 1024;
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Could not read the certificate image file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function compressCertificateImage(file: File) {
+  const rawDataUrl = await readFileAsDataUrl(file);
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not open the certificate image. Please use JPG, PNG or WEBP.'));
+    img.src = rawDataUrl;
+  });
+
+  const targetWidth = 1800;
+  const scale = image.width > targetWidth ? targetWidth / image.width : 1;
+  const width = Math.round(image.width * scale);
+  const height = Math.round(image.height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return rawDataUrl;
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, width, height);
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL('image/jpeg', 0.9);
+}
+
 export default function AdminCertificatesPage() {
   const [settings, setSettings] = useState<Required<CertificateSettings>>(DEFAULT_CERTIFICATE_SETTINGS);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -35,15 +70,34 @@ export default function AdminCertificatesPage() {
 
   function update<K extends keyof CertificateSettings>(key: K, value: CertificateSettings[K]) { setSettings(prev => normalizeCertificateSettings({ ...prev, [key]: value })); }
 
+  async function useLocalCertificateDesign(file: File, reason?: string) {
+    const compressedDataUrl = await compressCertificateImage(file);
+    setSettings(prev => normalizeCertificateSettings({ ...prev, templateUrl: compressedDataUrl }));
+    setMessage(`Certificate design loaded successfully using safe fallback storage. Click Save Certificate Settings to keep it permanently.${reason ? ` Storage note: ${reason}` : ''}`);
+  }
+
   async function uploadTemplate(file: File | null) {
     if (!file) return;
     setMessage('Uploading certificate design...'); setError('');
+    if (file.size > MAX_CERTIFICATE_IMAGE_SIZE) {
+      setError('The certificate design is too large. Please upload an image that is 15MB or less.');
+      setMessage('');
+      return;
+    }
+
     const form = new FormData(); form.append('file', file); form.append('folder', 'certificates');
-    const res = await fetch('/api/admin/upload', { method: 'POST', body: form });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) { setError(json.error || 'Upload failed.'); setMessage(''); return; }
-    setSettings(prev => normalizeCertificateSettings({ ...prev, templateUrl: json.url }));
-    setMessage('Certificate design uploaded. Click Save Certificate Settings to keep it.');
+    try {
+      const res = await fetch('/api/admin/upload', { method: 'POST', body: form });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.url) {
+        setSettings(prev => normalizeCertificateSettings({ ...prev, templateUrl: json.url }));
+        setMessage('Certificate design uploaded to Supabase Storage. Click Save Certificate Settings to keep it.');
+        return;
+      }
+      await useLocalCertificateDesign(file, json.error || 'Supabase Storage upload did not accept the file.');
+    } catch (err: any) {
+      await useLocalCertificateDesign(file, err?.message || 'Storage upload request failed.');
+    }
   }
 
   async function saveSettings(event?: FormEvent) {
@@ -90,7 +144,7 @@ export default function AdminCertificatesPage() {
 
       <section className="card card-pad"><span className="badge">Certificate of Participation</span><h1 style={{ marginTop: 12 }}>Upload design and place candidate details</h1><p className="muted">Upload your certificate design as PNG/JPG/WEBP. The system will add the participant name, category and selected date in the blank spaces you left.</p>{message && <div className="alert alert-success">{message}</div>}{error && <div className="alert alert-error">{error}</div>}
         <form onSubmit={saveSettings} className="grid"><div className="grid grid-2"><label><span className="label">Upload certificate design</span><input type="file" accept="image/*" onChange={e => uploadTemplate(e.target.files?.[0] || null)} /></label><label><span className="label">Certificate date</span><input className="input" type="date" value={settings.certificateDate} onChange={e => update('certificateDate', e.target.value)} /></label></div>
-          {settings.templateUrl && <div className="alert alert-info"><strong>Template uploaded:</strong> <a href={settings.templateUrl} target="_blank" rel="noreferrer">View certificate design</a></div>}
+          {settings.templateUrl && <div className="alert alert-info"><strong>Template uploaded:</strong> {settings.templateUrl.startsWith('data:') ? <span>Design is loaded and will be saved inside certificate settings.</span> : <a href={settings.templateUrl} target="_blank" rel="noreferrer">View certificate design</a>}</div>}
           <details open><summary><strong>Text positions and font sizes</strong></summary><p className="small muted">A4 landscape uses X from 0–297 and Y from 0–210. Increase Y to move text down. Increase X to move text right.</p><div className="grid grid-3" style={{ marginTop: 12 }}><NumberField label="Name X" value={settings.nameX} onChange={v => update('nameX', v)} /><NumberField label="Name Y" value={settings.nameY} onChange={v => update('nameY', v)} /><NumberField label="Name Font" value={settings.nameFontSize} onChange={v => update('nameFontSize', v)} /><NumberField label="Category X" value={settings.categoryX} onChange={v => update('categoryX', v)} /><NumberField label="Category Y" value={settings.categoryY} onChange={v => update('categoryY', v)} /><NumberField label="Category Font" value={settings.categoryFontSize} onChange={v => update('categoryFontSize', v)} /><NumberField label="Date X" value={settings.dateX} onChange={v => update('dateX', v)} /><NumberField label="Date Y" value={settings.dateY} onChange={v => update('dateY', v)} /><NumberField label="Date Font" value={settings.dateFontSize} onChange={v => update('dateFontSize', v)} /><label><span className="label">Text Color</span><input className="input" value={settings.textColor} onChange={e => update('textColor', e.target.value)} placeholder="#001f4d" /></label></div></details>
           <div className="flex wrap"><button className="btn btn-success" type="submit">Save Certificate Settings</button>{candidates[0] && <button type="button" className="btn btn-light" onClick={() => downloadOne(candidates[0])}>Preview with First Candidate</button>}</div></form></section>
 
