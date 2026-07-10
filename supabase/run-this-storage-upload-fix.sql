@@ -14,17 +14,23 @@ on conflict (id) do update set
   file_size_limit = 15728640,
   allowed_mime_types = array['image/png','image/jpeg','image/jpg','image/webp','image/gif'];
 
-create policy if not exists "Public read contest assets"
+-- Public bucket read access, so certificate templates can load in generated PDFs.
+drop policy if exists "Public read contest assets" on storage.objects;
+create policy "Public read contest assets"
   on storage.objects
   for select
   using (bucket_id = 'contest-assets');
 
-create policy if not exists "Service uploads contest assets"
+-- Upload/update access for authenticated admin API using the service role key.
+-- The service role bypasses RLS, but these policies also keep the bucket usable if RLS checks are applied.
+drop policy if exists "Service uploads contest assets" on storage.objects;
+create policy "Service uploads contest assets"
   on storage.objects
   for insert
   with check (bucket_id = 'contest-assets');
 
-create policy if not exists "Service updates contest assets"
+drop policy if exists "Service updates contest assets" on storage.objects;
+create policy "Service updates contest assets"
   on storage.objects
   for update
   using (bucket_id = 'contest-assets')
