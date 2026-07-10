@@ -75,14 +75,28 @@ async function imageToDataUrl(url: string) {
   });
 }
 
-function formatDate(dateValue: string) {
-  if (!dateValue) return '';
+function dateParts(dateValue: string) {
+  if (!dateValue) return null;
   const date = new Date(`${dateValue}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return dateValue;
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const year = String(date.getFullYear()).slice(-2);
-  return `${day}/${month}/${year}`;
+  if (Number.isNaN(date.getTime())) {
+    const parts = dateValue.split(/[\/\-.]/).map(part => part.trim()).filter(Boolean);
+    if (parts.length >= 3) return { day: parts[0].padStart(2, '0').slice(-2), month: parts[1].padStart(2, '0').slice(-2), year: parts[2].slice(-2) };
+    return null;
+  }
+  return {
+    day: String(date.getDate()).padStart(2, '0'),
+    month: String(date.getMonth() + 1).padStart(2, '0'),
+    year: String(date.getFullYear()).slice(-2)
+  };
+}
+
+function drawDateInTemplateSpaces(doc: jsPDF, dateValue: string, centerX: number, y: number) {
+  const parts = dateParts(dateValue);
+  if (!parts) return;
+  const spacing = 14;
+  doc.text(parts.day, centerX - spacing, y, { align: 'center', maxWidth: 12 });
+  doc.text(parts.month, centerX, y, { align: 'center', maxWidth: 12 });
+  doc.text(parts.year, centerX + spacing, y, { align: 'center', maxWidth: 12 });
 }
 
 export async function createCertificatePdf(recipient: CertificateRecipient, rawSettings?: CertificateSettings | null) {
@@ -112,7 +126,7 @@ export async function createCertificatePdf(recipient: CertificateRecipient, rawS
   doc.text(recipient.category || 'Category', settings.categoryX, settings.categoryY, { align: 'center', maxWidth: 220 });
 
   doc.setFontSize(settings.dateFontSize);
-  doc.text(formatDate(settings.certificateDate), settings.dateX, settings.dateY, { align: 'center', maxWidth: 180 });
+  drawDateInTemplateSpaces(doc, settings.certificateDate, settings.dateX, settings.dateY);
 
   return doc;
 }
@@ -147,7 +161,7 @@ export async function downloadCertificateBatch(recipients: CertificateRecipient[
     doc.setFontSize(normalized.categoryFontSize);
     doc.text(recipient.category || 'Category', normalized.categoryX, normalized.categoryY, { align: 'center', maxWidth: 220 });
     doc.setFontSize(normalized.dateFontSize);
-    doc.text(formatDate(normalized.certificateDate), normalized.dateX, normalized.dateY, { align: 'center', maxWidth: 180 });
+    drawDateInTemplateSpaces(doc, normalized.certificateDate, normalized.dateX, normalized.dateY);
   });
   doc.save('mezzopedia-certificates.pdf');
 }
