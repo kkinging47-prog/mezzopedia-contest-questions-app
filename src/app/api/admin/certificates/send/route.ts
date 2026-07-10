@@ -37,7 +37,10 @@ function hexToRgb(hex: string) {
 function formatDate(dateValue: string) {
   const date = new Date(`${dateValue}T00:00:00`);
   if (Number.isNaN(date.getTime())) return dateValue;
-  return date.toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = String(date.getFullYear()).slice(-2);
+  return `${day}/${month}/${year}`;
 }
 
 async function imageToDataUrl(url: string) {
