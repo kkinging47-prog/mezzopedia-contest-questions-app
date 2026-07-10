@@ -79,7 +79,10 @@ function formatDate(dateValue: string) {
   if (!dateValue) return '';
   const date = new Date(`${dateValue}T00:00:00`);
   if (Number.isNaN(date.getTime())) return dateValue;
-  return date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const year = String(date.getFullYear()).slice(-2);
+  return `${day}/${month}/${year}`;
 }
 
 export async function createCertificatePdf(recipient: CertificateRecipient, rawSettings?: CertificateSettings | null) {
