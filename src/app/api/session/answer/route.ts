@@ -2,10 +2,10 @@ import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError } from '@/lib/utils';
 import { getActiveParticipantSession } from '@/lib/sessionGuard';
-import { progressUpdateFor, remainingSessionSeconds } from '@/lib/sessionTime';
+import { answersWithResumeMeta, publicAnswers, remainingSessionSeconds } from '@/lib/sessionTime';
 
 export async function POST(request: NextRequest) {
-  const { session, error, status } = await getActiveParticipantSession(request, 'id,status,answers,question_order,expires_at,accumulated_time_seconds,active_started_at,current_question_index,active_login_token');
+  const { session, error, status } = await getActiveParticipantSession(request, 'id,status,answers,question_order,expires_at,active_login_token');
   if (error || !session) return jsonError(error || 'Not signed in.', status);
 
   const body = await request.json().catch(() => ({}));
@@ -24,32 +24,28 @@ export async function POST(request: NextRequest) {
   }
 
   const allowedQuestionIds = new Set<string>((session.question_order || []).map(String));
-  const answers = { ...(session.answers || {}) } as Record<string, string>;
+  const cleanIncoming: Record<string, string> = {};
 
   if (incomingAnswers) {
     for (const [rawQuestionId, rawOptionId] of Object.entries(incomingAnswers)) {
       const qid = String(rawQuestionId);
       const oid = String(rawOptionId || '');
       if (!allowedQuestionIds.has(qid) || !oid) continue;
-      answers[qid] = oid.slice(0, 12);
+      cleanIncoming[qid] = oid.slice(0, 12);
     }
   } else {
     const qid = String(questionId);
     if (!allowedQuestionIds.has(qid)) return jsonError('Invalid question for this session.', 403);
     if (!optionId) return jsonError('Missing answer.');
-    answers[qid] = String(optionId).slice(0, 12);
+    cleanIncoming[qid] = String(optionId).slice(0, 12);
   }
 
-  const update = {
-    ...progressUpdateFor(session, now, Number.isFinite(currentQuestionIndex) ? currentQuestionIndex : undefined),
-    answers
-  };
-
+  const answers = answersWithResumeMeta(session, now, cleanIncoming, Number.isFinite(currentQuestionIndex) ? currentQuestionIndex : undefined);
   const { error: updateError } = await supabaseAdmin
     .from('contest_sessions')
-    .update(update)
+    .update({ answers, updated_at: now.toISOString() })
     .eq('id', session.id);
 
-  if (updateError) return jsonError(`${updateError.message}. Run supabase/run-this-resumable-session-fix.sql in Supabase SQL Editor, then try again.`, 500);
-  return Response.json({ success: true, saved: Object.keys(answers).length });
+  if (updateError) return jsonError(updateError.message, 500);
+  return Response.json({ success: true, saved: Object.keys(publicAnswers({ answers })).length });
 }
