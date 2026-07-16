@@ -5,7 +5,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError } from '@/lib/utils';
 import { NextResponse } from 'next/server';
 import { getActiveParticipantSession } from '@/lib/sessionGuard';
-import { activeElapsedSeconds } from '@/lib/sessionTime';
+import { activeElapsedSeconds, publicAnswers } from '@/lib/sessionTime';
 
 export async function POST(request: NextRequest) {
   const { session, error, status } = await getActiveParticipantSession(request, '*');
@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
   if (session.status !== 'in_progress') return jsonError('Session has already ended.', 403);
 
   const questionIds: string[] = session.question_order || [];
-  const answers = session.answers || {};
+  const answers = publicAnswers(session);
   const unanswered = questionIds.filter(id => !answers[id]);
   const now = new Date();
   const timeUsedSeconds = activeElapsedSeconds(session, now);
@@ -60,12 +60,10 @@ export async function POST(request: NextRequest) {
       status: 'completed',
       submitted_at: submittedAt,
       time_used_seconds: timeUsedSeconds,
-      accumulated_time_seconds: timeUsedSeconds,
-      active_started_at: null,
-      last_seen_at: submittedAt,
       score,
       max_score: maxScore,
       total_questions: questionIds.length,
+      answers,
       answer_breakdown: breakdown,
       proctoring_summary: proctoringSummary
     })
