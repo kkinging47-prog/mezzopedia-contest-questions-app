@@ -2,9 +2,10 @@ import { NextRequest } from 'next/server';
 import { COOKIE_NAMES } from '@/lib/constants';
 import { clearCookie } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { jsonError, secondsBetween } from '@/lib/utils';
+import { jsonError } from '@/lib/utils';
 import { NextResponse } from 'next/server';
 import { getActiveParticipantSession } from '@/lib/sessionGuard';
+import { activeElapsedSeconds } from '@/lib/sessionTime';
 
 export async function POST(request: NextRequest) {
   const { session, error, status } = await getActiveParticipantSession(request, '*');
@@ -16,7 +17,9 @@ export async function POST(request: NextRequest) {
   const questionIds: string[] = session.question_order || [];
   const answers = session.answers || {};
   const unanswered = questionIds.filter(id => !answers[id]);
-  const expired = new Date(session.expires_at).getTime() < Date.now();
+  const now = new Date();
+  const timeUsedSeconds = activeElapsedSeconds(session, now);
+  const expired = timeUsedSeconds >= 70 * 60;
 
   if (unanswered.length > 0 && !force && !expired) {
     return jsonError(`You still have ${unanswered.length} unanswered question(s).`, 400);
@@ -42,8 +45,7 @@ export async function POST(request: NextRequest) {
     breakdown[q.id] = { selected, correct: q.correct_option_id, isCorrect, points };
   }
 
-  const submittedAt = new Date().toISOString();
-  const timeUsedSeconds = secondsBetween(session.started_at, submittedAt);
+  const submittedAt = now.toISOString();
 
   const { data: events } = await supabaseAdmin
     .from('proctoring_events')
@@ -58,6 +60,9 @@ export async function POST(request: NextRequest) {
       status: 'completed',
       submitted_at: submittedAt,
       time_used_seconds: timeUsedSeconds,
+      accumulated_time_seconds: timeUsedSeconds,
+      active_started_at: null,
+      last_seen_at: submittedAt,
       score,
       max_score: maxScore,
       total_questions: questionIds.length,
@@ -67,6 +72,8 @@ export async function POST(request: NextRequest) {
     .eq('id', session.id);
 
   if (updateError) return jsonError(updateError.message, 500);
+
+  await supabaseAdmin.from('participants').update({ is_active: false }).eq('id', session.participant_id).then(() => null);
 
   const response = NextResponse.json({ success: true, score, maxScore, totalQuestions: questionIds.length });
   clearCookie(response, COOKIE_NAMES.participant);
