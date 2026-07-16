@@ -4,10 +4,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { DEFAULT_RUNTIME_SETTINGS } from '@/lib/runtimeSettings';
 
+const DEFAULT_TEST_DURATION_SECONDS = 70 * 60;
+const HEARTBEAT_MS = 10000;
+
 type Option = { id: string; text: string; imageUrl?: string };
 type Question = { id: string; text: string; imageUrl?: string; options: Option[]; points: number };
 type SessionPayload = {
-  session: { id: string; startedAt: string; expiresAt: string; answers: Record<string, string>; participant: { name: string; usercode: string; category: string } };
+  session: {
+    id: string;
+    startedAt: string;
+    expiresAt: string;
+    answers: Record<string, string>;
+    timeUsedSeconds?: number;
+    durationSeconds?: number;
+    currentQuestionIndex?: number;
+    participant: { name: string; usercode: string; category: string };
+  };
   questions: Question[];
 };
 
@@ -39,6 +51,16 @@ function normalizeRuntimeSettings(value: unknown): RuntimeSettings {
   };
 }
 
+function boundedIndex(index: number, count: number) {
+  if (!count) return 0;
+  return Math.min(count - 1, Math.max(0, Math.floor(index || 0)));
+}
+
+function firstUnansweredIndex(questions: Question[], answers: Record<string, string>, fallback: number) {
+  const unanswered = questions.findIndex(q => !answers[q.id]);
+  return boundedIndex(unanswered >= 0 ? unanswered : fallback, questions.length);
+}
+
 export default function TestPage() {
   const router = useRouter();
   const [data, setData] = useState<SessionPayload | null>(null);
@@ -57,6 +79,7 @@ export default function TestPage() {
   const [proctorError, setProctorError] = useState('');
   const [proctorWarning, setProctorWarning] = useState('');
   const [violations, setViolations] = useState(0);
+
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -67,6 +90,9 @@ export default function TestPage() {
   const audioRecordingRef = useRef(false);
   const pendingAnswersRef = useRef<Record<string, string>>({});
   const answerTimerRef = useRef<number | null>(null);
+  const heartbeatTimerRef = useRef<number | null>(null);
+  const currentRef = useRef(0);
+  const sessionLoadedAtRef = useRef(Date.now());
 
   const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
   const isMobile = typeof navigator !== 'undefined' && /Mobi|Android|iPad|iPhone|iPod/.test(navigator.userAgent);
@@ -144,15 +170,42 @@ export default function TestPage() {
     return total / (data.length / 4);
   }
 
+  async function saveProgress(useBeacon = false) {
+    if (!data) return true;
+    const pending = { ...pendingAnswersRef.current };
+    const body = JSON.stringify({ currentQuestionIndex: currentRef.current, answers: pending });
+
+    if (useBeacon && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+      const sent = navigator.sendBeacon('/api/session/progress', new Blob([body], { type: 'application/json' }));
+      return sent;
+    }
+
+    const res = await fetch('/api/session/progress', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    }).catch(() => null);
+
+    if (res?.ok) {
+      pendingAnswersRef.current = {};
+      return true;
+    }
+    return false;
+  }
+
   async function flushPendingAnswers() {
     const pending = { ...pendingAnswersRef.current };
+    if (!Object.keys(pending).length && data) {
+      await saveProgress().catch(() => null);
+      return true;
+    }
     if (!Object.keys(pending).length) return true;
     pendingAnswersRef.current = {};
     setSyncing(true);
     const res = await fetch('/api/session/answer', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answers: pending })
+      body: JSON.stringify({ answers: pending, currentQuestionIndex: currentRef.current })
     }).catch(() => null);
     setSyncing(false);
     if (!res || !res.ok) {
@@ -170,6 +223,13 @@ export default function TestPage() {
     }, runtime.answerSaveDelayMs);
   }
 
+  function goToQuestion(index: number) {
+    const next = boundedIndex(index, data?.questions.length || 0);
+    currentRef.current = next;
+    setCurrent(next);
+    saveProgress().catch(() => null);
+  }
+
   const logViolation = useCallback(async (eventType: string, severity: Severity, details: Record<string, unknown> = {}, captureEvidence: CaptureEvidence = false) => {
     const now = Date.now();
     const key = `${eventType}:${severity}`;
@@ -184,7 +244,7 @@ export default function TestPage() {
 
     const captureImages = typeof captureEvidence === 'boolean' ? captureEvidence : !!captureEvidence.images;
     const captureAudio = typeof captureEvidence === 'object' ? !!captureEvidence.audio : false;
-    const bodyDetails: Record<string, unknown> = { ...details, questionIndex: current + 1 };
+    const bodyDetails: Record<string, unknown> = { ...details, questionIndex: currentRef.current + 1 };
 
     if (captureImages) {
       const faceSnapshotDataUrl = captureFromVideo(videoRef.current);
@@ -202,7 +262,7 @@ export default function TestPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ eventType, severity, details: bodyDetails })
     }).catch(() => null);
-  }, [current, runtime]);
+  }, [runtime]);
 
   useEffect(() => {
     fetch('/api/stability')
@@ -216,8 +276,13 @@ export default function TestPage() {
       .then(async res => {
         const json = await res.json();
         if (!res.ok) throw new Error(json.error || 'Could not load test.');
+        const loadedAnswers = json.session.answers || {};
+        const resumeIndex = firstUnansweredIndex(json.questions || [], loadedAnswers, Number(json.session.currentQuestionIndex || 0));
+        sessionLoadedAtRef.current = Date.now();
+        currentRef.current = resumeIndex;
         setData(json);
-        setAnswers(json.session.answers || {});
+        setAnswers(loadedAnswers);
+        setCurrent(resumeIndex);
       })
       .catch(err => setError(err.message))
       .finally(() => setLoading(false));
@@ -226,13 +291,35 @@ export default function TestPage() {
   useEffect(() => {
     if (!data) return;
     const tick = () => {
-      const seconds = Math.max(0, Math.floor((new Date(data.session.expiresAt).getTime() - Date.now()) / 1000));
+      const duration = Number(data.session.durationSeconds || DEFAULT_TEST_DURATION_SECONDS);
+      const usedBeforeLoad = Number(data.session.timeUsedSeconds || 0);
+      const activeSeconds = Math.floor((Date.now() - sessionLoadedAtRef.current) / 1000);
+      const seconds = Math.max(0, duration - usedBeforeLoad - activeSeconds);
       setTimeLeft(seconds);
       if (seconds === 0) submit(true);
     };
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  useEffect(() => {
+    if (!data) return;
+    heartbeatTimerRef.current = window.setInterval(() => {
+      saveProgress().catch(() => null);
+    }, HEARTBEAT_MS);
+
+    const onPageHide = () => { saveProgress(true).catch(() => null); };
+    const onVisibility = () => { if (document.hidden) saveProgress(true).catch(() => null); };
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibility);
+
+    return () => {
+      if (heartbeatTimerRef.current) window.clearInterval(heartbeatTimerRef.current);
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
@@ -313,6 +400,7 @@ export default function TestPage() {
 
   useEffect(() => () => {
     if (answerTimerRef.current) window.clearTimeout(answerTimerRef.current);
+    if (heartbeatTimerRef.current) window.clearInterval(heartbeatTimerRef.current);
     mediaStreamRef.current?.getTracks().forEach(track => track.stop());
     screenStreamRef.current?.getTracks().forEach(track => track.stop());
     audioContextRef.current?.close().catch(() => null);
@@ -330,7 +418,7 @@ export default function TestPage() {
 
   function setupAudioMonitoring(stream: MediaStream) {
     try {
-      const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+      const AudioContextCtor = (window as any).AudioContext || (window as any).webkitAudioContext;
       if (!AudioContextCtor) return;
       const audioContext = new AudioContextCtor();
       const source = audioContext.createMediaStreamSource(stream);
@@ -371,7 +459,7 @@ export default function TestPage() {
       setupAudioMonitoring(stream);
       setupSpeechMonitoring();
 
-      if (screenCaptureSupported && !isIOS && runtime.requireDesktopScreen) {
+      if (screenCaptureSupported && !isMobile && !isIOS && runtime.requireDesktopScreen) {
         try {
           const screenStream = await (navigator.mediaDevices as any).getDisplayMedia({ video: true, audio: false });
           screenStreamRef.current = screenStream;
@@ -389,7 +477,7 @@ export default function TestPage() {
       await fetch('/api/session/proctoring', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ eventType: 'PROCTORING_STARTED', severity: 'low', details: { camera: true, audio: true, screen: screenCaptureSupported && !isIOS, isIOS, runtime } })
+        body: JSON.stringify({ eventType: 'PROCTORING_STARTED', severity: 'low', details: { camera: true, audio: true, screen: screenCaptureSupported && !isMobile && !isIOS, isIOS, isMobile, runtime } })
       }).catch(() => null);
 
       if (!isIOS && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen().catch(() => logViolation('FULLSCREEN_DECLINED', 'high', {}, true));
@@ -438,7 +526,7 @@ export default function TestPage() {
             <span className="badge">AI Proctored Test</span>
             <h1 style={{ marginTop: 14 }}>Before You Continue</h1>
             <p>This test monitors camera/microphone permission, repeat logins, tab switching, copy/paste, keyboard shortcuts, fullscreen exits, small/split windows, suspicious browser panels, surrounding audio spikes, possible spoken answer clues, covered camera, and periodic face/screen snapshots where your browser allows it.</p>
-            <div className="alert alert-info">For high-traffic contest days, answers are saved in short batches and review snapshots are spaced out to keep the app stable for hundreds of candidates.</div>
+            <div className="alert alert-info">Your answers, current question and used minutes are saved regularly. If your network drops or the page closes, sign in again with the same code to continue from where you stopped.</div>
             <div className="alert alert-info">Camera and microphone access are required. On laptops/desktops, screen sharing is also required. Suspicious audio events save only a short review clip.</div>
             {isIOS && <div className="alert alert-info">iPhone/iPad users are not forced into fullscreen and may not support screen sharing. Camera and microphone are still required. Use Safari/Chrome updated to the latest version.</div>}
             {proctorError && <div className="alert alert-error">{proctorError}</div>}
@@ -455,8 +543,8 @@ export default function TestPage() {
       <video ref={screenVideoRef} muted playsInline style={{ width: 1, height: 1, opacity: 0, position: 'fixed', left: -9999 }} />
       <div className="proctor no-print">
         <strong>Proctoring Active</strong>
-        <div className="small">📹 Camera: {cameraReady ? 'Active' : 'Required'} • 🎤 Audio: {audioReady ? 'Active' : 'Required'} • 🖥️ Screen: {screenReady || isIOS || !screenCaptureSupported ? 'Active/Not supported' : 'Required'}</div>
-        <div className="small">Violations logged: {violations}. {syncing ? 'Saving answer...' : 'Answers synced in batches.'}</div>
+        <div className="small">📹 Camera: {cameraReady ? 'Active' : 'Required'} • 🎤 Audio: {audioReady ? 'Active' : 'Required'} • 🖥️ Screen: {screenReady || isIOS || isMobile || !screenCaptureSupported ? 'Active/Not supported' : 'Required'}</div>
+        <div className="small">Violations logged: {violations}. {syncing ? 'Saving answer...' : 'Answers/current question/time saved regularly.'}</div>
       </div>
 
       <div className="container">
@@ -488,11 +576,11 @@ export default function TestPage() {
           )}
 
           <div className="flex between wrap no-print sticky-test-actions" style={{ marginTop: 20 }}>
-            <button className="btn btn-light" disabled={current === 0} onClick={() => setCurrent(v => Math.max(0, v - 1))}>Previous</button>
+            <button className="btn btn-light" disabled={current === 0} onClick={() => goToQuestion(current - 1)}>Previous</button>
             <div className="flex wrap question-nav" style={{ justifyContent: 'center' }}>{data?.questions.map((q, index) => (
-              <button key={q.id} className={`tab ${index === current ? 'active' : ''}`} onClick={() => setCurrent(index)} style={{ background: answers[q.id] && index !== current ? '#0f8a4b' : undefined, color: answers[q.id] && index !== current ? 'white' : undefined }}>{index + 1}</button>
+              <button key={q.id} className={`tab ${index === current ? 'active' : ''}`} onClick={() => goToQuestion(index)} style={{ background: answers[q.id] && index !== current ? '#0f8a4b' : undefined, color: answers[q.id] && index !== current ? 'white' : undefined }}>{index + 1}</button>
             ))}</div>
-            {current + 1 < (data?.questions.length || 0) ? <button className="btn btn-primary" onClick={() => setCurrent(v => v + 1)}>Next</button> : <button className="btn btn-success" disabled={submitting} onClick={() => submit(false)}>{submitting ? 'Submitting...' : 'Submit Test'}</button>}
+            {current + 1 < (data?.questions.length || 0) ? <button className="btn btn-primary" onClick={() => goToQuestion(current + 1)}>Next</button> : <button className="btn btn-success" disabled={submitting} onClick={() => submit(false)}>{submitting ? 'Submitting...' : 'Submit Test'}</button>}
           </div>
         </div>
       </div>
