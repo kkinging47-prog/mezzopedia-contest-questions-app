@@ -4,6 +4,7 @@ import { COOKIE_NAMES, QUESTION_COUNT_OPTIONS, TEST_DURATION_MINUTES } from '@/l
 import { setSecureCookie, signToken, verifyPassword } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeCategory, normalizeContestStage, shuffle } from '@/lib/utils';
+import { remainingSessionSeconds } from '@/lib/sessionTime';
 
 type StageSettings = Record<string, { isOpen?: boolean }>;
 type QuestionCountSettings = Record<string, Record<string, number>>;
@@ -142,6 +143,7 @@ export async function POST(request: Request) {
 
   if (sessionError) return jsonError(sessionError.message, 500);
   let loginType = 'LOGIN_NEW_SESSION';
+  const now = new Date();
 
   if (!session) {
     let questionQuery = supabaseAdmin.from('questions').select('id').eq('category', category).eq('is_active', true).eq('phase', stage);
@@ -158,38 +160,53 @@ export async function POST(request: Request) {
 
     const requestedCount = questionLimitFor(questionCountSettings, stage, category);
     const selected = await pickUniqueQuestionOrder(questions.map(q => q.id), requestedCount, category, stage);
-    const now = new Date();
     const expiresAt = new Date(now.getTime() + TEST_DURATION_MINUTES * 60 * 1000);
 
     const { data: created, error: createError } = await supabaseAdmin
       .from('contest_sessions')
-      .insert({ participant_id: participant.id, category, contest_stage: stage, status: 'in_progress', started_at: now.toISOString(), expires_at: expiresAt.toISOString(), question_order: selected, answers: {}, total_questions: selected.length })
+      .insert({
+        participant_id: participant.id,
+        category,
+        contest_stage: stage,
+        status: 'in_progress',
+        started_at: now.toISOString(),
+        expires_at: expiresAt.toISOString(),
+        question_order: selected,
+        answers: {},
+        total_questions: selected.length,
+        accumulated_time_seconds: 0,
+        active_started_at: now.toISOString(),
+        last_seen_at: now.toISOString(),
+        current_question_index: 0
+      })
       .select('*')
       .single();
 
-    if (createError) return jsonError(createError.message, 500);
+    if (createError) return jsonError(`${createError.message}. Run supabase/run-this-resumable-session-fix.sql in Supabase SQL Editor, then try again.`, 500);
     session = created;
   } else {
     loginType = 'LOGIN_RESUME_EXISTING_SESSION';
-    const reshuffled = shuffle(session.question_order || []);
-    const { data: updatedSession, error: reorderError } = await supabaseAdmin.from('contest_sessions').update({ question_order: reshuffled, updated_at: new Date().toISOString() }).eq('id', session.id).select('*').single();
-    if (!reorderError && updatedSession) session = updatedSession;
+    if (remainingSessionSeconds(session, now) <= 0) {
+      await supabaseAdmin.from('contest_sessions').update({ status: 'expired', updated_at: now.toISOString() }).eq('id', session.id);
+      return jsonError('Time is up for this test session. Please contact the contest administrator.', 403);
+    }
+    // Important: keep the original question order and saved answers. Do not reshuffle resumed sessions.
   }
 
   const previousLogins = Number(participant.login_count || 0);
   const loginToken = randomUUID();
 
-  await supabaseAdmin.from('participants').update({ last_login_at: new Date().toISOString(), login_count: previousLogins + 1 }).eq('id', participant.id);
-  await supabaseAdmin.from('contest_sessions').update({ active_login_token: loginToken, active_user_agent: userAgent, last_reauth_at: new Date().toISOString() }).eq('id', session.id);
+  await supabaseAdmin.from('participants').update({ last_login_at: now.toISOString(), login_count: previousLogins + 1 }).eq('id', participant.id);
+  await supabaseAdmin.from('contest_sessions').update({ active_login_token: loginToken, active_user_agent: userAgent, active_started_at: now.toISOString(), last_reauth_at: now.toISOString(), last_seen_at: now.toISOString() }).eq('id', session.id);
 
-  await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, questionCount: session.total_questions } }).then(() => null);
+  await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, resumedExistingSession: loginType === 'LOGIN_RESUME_EXISTING_SESSION', questionCount: session.total_questions } }).then(() => null);
 
   if (previousLogins > 0) {
-    await supabaseAdmin.from('proctoring_events').insert({ session_id: session.id, participant_id: participant.id, event_type: 'MULTIPLE_OR_REPEAT_USERCODE_LOGIN', severity: 'high', details: { previousLogins, message: 'The same usercode logged in again. Older browser sessions were invalidated.' }, user_agent: userAgent }).then(() => null);
+    await supabaseAdmin.from('proctoring_events').insert({ session_id: session.id, participant_id: participant.id, event_type: 'MULTIPLE_OR_REPEAT_USERCODE_LOGIN', severity: 'high', details: { previousLogins, message: 'The same usercode logged in again. Older browser sessions were invalidated, but the latest login resumes the existing session.' }, user_agent: userAgent }).then(() => null);
   }
 
   const token = await signToken({ type: 'participant', sessionId: session.id, participantId: participant.id, loginToken }, TEST_DURATION_MINUTES * 60 + 60 * 24);
-  const response = NextResponse.json({ success: true, participant: { name: participant.name, category: participant.category, usercode: participant.usercode, contestStage: stage }, session: { id: session.id, status: session.status, totalQuestions: session.total_questions } });
+  const response = NextResponse.json({ success: true, participant: { name: participant.name, category: participant.category, usercode: participant.usercode, contestStage: stage }, session: { id: session.id, status: session.status, totalQuestions: session.total_questions, resumed: loginType === 'LOGIN_RESUME_EXISTING_SESSION' } });
   setSecureCookie(response, COOKIE_NAMES.participant, token, TEST_DURATION_MINUTES * 60 + 60 * 24);
   return response;
 }
