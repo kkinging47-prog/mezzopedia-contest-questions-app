@@ -4,7 +4,7 @@ import { COOKIE_NAMES, QUESTION_COUNT_OPTIONS, TEST_DURATION_MINUTES } from '@/l
 import { setSecureCookie, signToken, verifyPassword } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeCategory, normalizeContestStage, shuffle } from '@/lib/utils';
-import { remainingSessionSeconds } from '@/lib/sessionTime';
+import { answersWithResumeMeta, remainingSessionSeconds } from '@/lib/sessionTime';
 
 type StageSettings = Record<string, { isOpen?: boolean }>;
 type QuestionCountSettings = Record<string, Record<string, number>>;
@@ -161,6 +161,7 @@ export async function POST(request: Request) {
     const requestedCount = questionLimitFor(questionCountSettings, stage, category);
     const selected = await pickUniqueQuestionOrder(questions.map(q => q.id), requestedCount, category, stage);
     const expiresAt = new Date(now.getTime() + TEST_DURATION_MINUTES * 60 * 1000);
+    const initialAnswers = answersWithResumeMeta({ answers: {} }, now, undefined, 0);
 
     const { data: created, error: createError } = await supabaseAdmin
       .from('contest_sessions')
@@ -172,17 +173,13 @@ export async function POST(request: Request) {
         started_at: now.toISOString(),
         expires_at: expiresAt.toISOString(),
         question_order: selected,
-        answers: {},
-        total_questions: selected.length,
-        accumulated_time_seconds: 0,
-        active_started_at: now.toISOString(),
-        last_seen_at: now.toISOString(),
-        current_question_index: 0
+        answers: initialAnswers,
+        total_questions: selected.length
       })
       .select('*')
       .single();
 
-    if (createError) return jsonError(`${createError.message}. Run supabase/run-this-resumable-session-fix.sql in Supabase SQL Editor, then try again.`, 500);
+    if (createError) return jsonError(createError.message, 500);
     session = created;
   } else {
     loginType = 'LOGIN_RESUME_EXISTING_SESSION';
@@ -195,9 +192,10 @@ export async function POST(request: Request) {
 
   const previousLogins = Number(participant.login_count || 0);
   const loginToken = randomUUID();
+  const resumedAnswers = answersWithResumeMeta(session, now, undefined);
 
   await supabaseAdmin.from('participants').update({ last_login_at: now.toISOString(), login_count: previousLogins + 1 }).eq('id', participant.id);
-  await supabaseAdmin.from('contest_sessions').update({ active_login_token: loginToken, active_user_agent: userAgent, active_started_at: now.toISOString(), last_reauth_at: now.toISOString(), last_seen_at: now.toISOString() }).eq('id', session.id);
+  await supabaseAdmin.from('contest_sessions').update({ active_login_token: loginToken, active_user_agent: userAgent, last_reauth_at: now.toISOString(), answers: resumedAnswers, updated_at: now.toISOString() }).eq('id', session.id);
 
   await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, resumedExistingSession: loginType === 'LOGIN_RESUME_EXISTING_SESSION', questionCount: session.total_questions } }).then(() => null);
 
