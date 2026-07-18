@@ -3,15 +3,9 @@ import { requireAdmin } from '@/lib/auth';
 import { CONTEST_STAGES } from '@/lib/constants';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage, percentage } from '@/lib/utils';
+import { getStageAccess, normalizeStageSettings, StageSettings } from '@/lib/stageAccess';
 
 type StageName = (typeof CONTEST_STAGES)[number];
-type StageSettings = Record<string, { isOpen: boolean; note?: string; updatedAt?: string }>;
-
-const DEFAULT_STAGE_SETTINGS: StageSettings = {
-  'Stage 1': { isOpen: true, note: 'Initial online stage' },
-  'Stage 2': { isOpen: false, note: 'Open after Stage 1 qualification' },
-  'Stage 3': { isOpen: false, note: 'Open after Stage 2 qualification' }
-};
 
 function stageIndex(stage: string) {
   return CONTEST_STAGES.indexOf(stage as StageName);
@@ -21,11 +15,13 @@ function normalizeStage(stage: unknown) {
   return normalizeContestStage(stage);
 }
 
-function normalizeSettings(value: unknown): StageSettings {
-  const incoming = value && typeof value === 'object' && !Array.isArray(value) ? value as StageSettings : {};
-  const merged: StageSettings = {};
-  for (const stage of CONTEST_STAGES) merged[stage] = { ...DEFAULT_STAGE_SETTINGS[stage], ...(incoming[stage] || {}) };
-  return merged;
+function cleanScheduleDate(value: unknown) {
+  if (!value) return '';
+  const raw = String(value).trim();
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString();
 }
 
 async function normalizeStoredStageValues() {
@@ -39,16 +35,16 @@ async function normalizeStoredStageValues() {
 async function readStageConfig() {
   const { data } = await supabaseAdmin.from('app_config').select('key,value').in('key', ['activePhase', 'stageSettings']);
   let activePhase = 'Stage 1';
-  let stageSettings = DEFAULT_STAGE_SETTINGS;
+  let stageSettings = normalizeStageSettings({});
   for (const row of data || []) {
     if (row.key === 'activePhase') activePhase = normalizeStage(row.value);
-    if (row.key === 'stageSettings') stageSettings = normalizeSettings(row.value);
+    if (row.key === 'stageSettings') stageSettings = normalizeStageSettings(row.value);
   }
   return { activePhase, stageSettings };
 }
 
 async function writeStageConfig(activePhase: string, stageSettings: StageSettings) {
-  const rows = [{ key: 'activePhase', value: activePhase }, { key: 'stageSettings', value: stageSettings }];
+  const rows = [{ key: 'activePhase', value: activePhase }, { key: 'stageSettings', value: normalizeStageSettings(stageSettings) }];
   const { error } = await supabaseAdmin.from('app_config').upsert(rows, { onConflict: 'key' });
   return error;
 }
@@ -61,6 +57,7 @@ export async function GET(request: NextRequest) {
   const selectedStage = normalizeStage(request.nextUrl.searchParams.get('stage'));
   const category = request.nextUrl.searchParams.get('category') || 'All';
   const { activePhase, stageSettings } = await readStageConfig();
+  const now = new Date();
 
   const { data: participants, error: participantError } = await supabaseAdmin
     .from('participants')
@@ -76,12 +73,19 @@ export async function GET(request: NextRequest) {
   if (sessionError) return jsonError(sessionError.message, 500);
 
   const summaries = CONTEST_STAGES.map(stage => {
+    const access = getStageAccess(stageSettings, stage, now);
+    const settings = stageSettings[stage] || {};
     const stageParticipants = (participants || []).filter((p: any) => normalizeStage(p.contest_stage || 'Stage 1') === stage);
     const completed = (sessions || []).filter((s: any) => normalizeStage(s.contest_stage || 'Stage 1') === stage && s.status === 'completed');
     return {
       stage,
-      isOpen: Boolean(stageSettings[stage]?.isOpen),
-      note: stageSettings[stage]?.note || '',
+      isOpen: access.isAccessible,
+      manualOpen: Boolean(settings.isOpen),
+      scheduleStatus: access.reason,
+      accessMessage: access.message,
+      startsAt: settings.startsAt || '',
+      endsAt: settings.endsAt || '',
+      note: settings.note || '',
       participantCount: stageParticipants.length,
       activeParticipantCount: stageParticipants.filter((p: any) => p.is_active).length,
       completedCount: completed.length
@@ -110,7 +114,7 @@ export async function GET(request: NextRequest) {
     }))
     .sort((a, b) => b.score - a.score || a.timeUsedSeconds - b.timeUsedSeconds || a.name.localeCompare(b.name));
 
-  return Response.json({ success: true, activePhase, stageSettings, summaries, completedCandidates });
+  return Response.json({ success: true, activePhase, stageSettings, summaries, completedCandidates, serverNow: now.toISOString(), timeZone: 'Africa/Accra' });
 }
 
 export async function POST(request: NextRequest) {
@@ -128,9 +132,9 @@ export async function POST(request: NextRequest) {
     const isOpen = Boolean(body.isOpen);
     const openOnlyThisStage = Boolean(body.openOnlyThisStage);
 
-    const nextSettings = normalizeSettings(stageSettings);
+    const nextSettings = normalizeStageSettings(stageSettings);
     if (openOnlyThisStage) for (const item of CONTEST_STAGES) nextSettings[item] = { ...nextSettings[item], isOpen: item === stage, updatedAt: now };
-    nextSettings[stage] = { ...nextSettings[stage], isOpen, updatedAt: now, note: isOpen ? `${stage} is open for assigned candidates.` : `${stage} is closed.` };
+    nextSettings[stage] = { ...nextSettings[stage], isOpen, updatedAt: now, note: isOpen ? `${stage} is open for assigned candidates within its scheduled time.` : `${stage} is closed.` };
 
     const nextActivePhase = isOpen ? stage : activePhase;
     const error = await writeStageConfig(nextActivePhase, nextSettings);
@@ -140,8 +144,30 @@ export async function POST(request: NextRequest) {
     const { error: participantStatusError } = await supabaseAdmin.from('participants').update({ is_active: isOpen, updated_at: now }).eq('contest_stage', stage);
     if (participantStatusError) return jsonError(participantStatusError.message, 500);
 
-    await supabaseAdmin.from('admin_audit_logs').insert({ action: isOpen ? 'OPEN_CONTEST_STAGE' : 'CLOSE_CONTEST_STAGE', entity_type: 'stage', details: { stage, isOpen, openOnlyThisStage, nextActivePhase, note: 'Stage open/close also updates candidate code access for users assigned to that stage.' } }).then(() => null);
+    await supabaseAdmin.from('admin_audit_logs').insert({ action: isOpen ? 'OPEN_CONTEST_STAGE' : 'CLOSE_CONTEST_STAGE', entity_type: 'stage', details: { stage, isOpen, openOnlyThisStage, nextActivePhase, note: 'Stage open/close updates code access. Stage schedule can still block access before start time or after end time.' } }).then(() => null);
     return Response.json({ success: true, activePhase: nextActivePhase, stageSettings: nextSettings });
+  }
+
+  if (action === 'updateStageSchedule') {
+    const stage = normalizeStage(body.stage);
+    const startsAt = cleanScheduleDate(body.startsAt);
+    const endsAt = cleanScheduleDate(body.endsAt);
+    if (startsAt && endsAt && new Date(startsAt).getTime() >= new Date(endsAt).getTime()) return jsonError('The stage start time must be earlier than the end time.', 400);
+
+    const { activePhase, stageSettings } = await readStageConfig();
+    const nextSettings = normalizeStageSettings(stageSettings);
+    nextSettings[stage] = {
+      ...nextSettings[stage],
+      startsAt,
+      endsAt,
+      updatedAt: now,
+      note: startsAt || endsAt ? `${stage} has a scheduled start/end time.` : `${stage} schedule cleared.`
+    };
+
+    const error = await writeStageConfig(activePhase, nextSettings);
+    if (error) return jsonError(error.message, 500);
+    await supabaseAdmin.from('admin_audit_logs').insert({ action: 'UPDATE_STAGE_SCHEDULE', entity_type: 'stage', details: { stage, startsAt, endsAt, timeZone: 'Africa/Accra' } }).then(() => null);
+    return Response.json({ success: true, activePhase, stageSettings: nextSettings });
   }
 
   if (action === 'promoteSelected') {
