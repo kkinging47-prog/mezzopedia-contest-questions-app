@@ -5,20 +5,14 @@ import { setSecureCookie, signToken, verifyPassword } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeCategory, normalizeContestStage, shuffle } from '@/lib/utils';
 import { answersWithResumeMeta, remainingSessionSeconds } from '@/lib/sessionTime';
+import { getStageAccess, StageSettings } from '@/lib/stageAccess';
 
-type StageSettings = Record<string, { isOpen?: boolean }>;
 type QuestionCountSettings = Record<string, Record<string, number>>;
 
 function parseConfigRows(rows: any[] | null | undefined) {
   const config: Record<string, any> = {};
   for (const row of rows || []) config[row.key] = row.value;
   return config;
-}
-
-function isStageOpen(stageSettings: StageSettings, stage: string) {
-  const normalizedStage = normalizeContestStage(stage);
-  if (!stageSettings || !stageSettings[normalizedStage]) return normalizedStage === 'Stage 1';
-  return Boolean(stageSettings[normalizedStage]?.isOpen);
 }
 
 function questionLimitFor(settings: QuestionCountSettings, stage: string, category: string) {
@@ -105,17 +99,18 @@ export async function POST(request: Request) {
   const stageSettings = (config.stageSettings || {}) as StageSettings;
   const questionCountSettings = (config.questionCountSettings || {}) as QuestionCountSettings;
 
-  if (!isStageOpen(stageSettings, stage)) {
+  const stageAccess = getStageAccess(stageSettings, stage);
+  if (!stageAccess.isAccessible) {
     await supabaseAdmin.from('participant_login_events').insert({
       participant_id: participant.id,
       usercode: participant.usercode,
       category: participant.category,
       contest_stage: stage,
-      event_type: 'LOGIN_BLOCKED_STAGE_CLOSED',
+      event_type: stageAccess.reason === 'not_started' ? 'LOGIN_BLOCKED_STAGE_NOT_STARTED' : stageAccess.reason === 'ended' ? 'LOGIN_BLOCKED_STAGE_ENDED' : 'LOGIN_BLOCKED_STAGE_CLOSED',
       user_agent: userAgent,
-      details: { message: `${stage} is closed. Candidate was not allowed to start/resume.` }
+      details: { message: stageAccess.message, reason: stageAccess.reason }
     }).then(() => null);
-    return jsonError(`${stage} is currently closed. Please wait for the contest administrator to open it.`, 403);
+    return jsonError(stageAccess.message, 403);
   }
 
   if (enteredName && enteredName.toLowerCase() !== String(participant.name || '').toLowerCase()) {
