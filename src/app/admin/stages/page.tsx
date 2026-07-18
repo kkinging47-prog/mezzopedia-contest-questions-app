@@ -6,6 +6,11 @@ import { CONTEST_STAGES, DEFAULT_CATEGORIES } from '@/lib/constants';
 type StageSummary = {
   stage: string;
   isOpen: boolean;
+  manualOpen: boolean;
+  scheduleStatus: 'open' | 'manual_closed' | 'not_started' | 'ended';
+  accessMessage: string;
+  startsAt?: string;
+  endsAt?: string;
   note?: string;
   participantCount: number;
   activeParticipantCount: number;
@@ -29,6 +34,8 @@ type CompletedCandidate = {
   submittedAt?: string | null;
 };
 
+type ScheduleDraft = { startsAt: string; endsAt: string };
+
 function formatSeconds(seconds: number) {
   const m = Math.floor((seconds || 0) / 60);
   const s = (seconds || 0) % 60;
@@ -38,6 +45,43 @@ function formatSeconds(seconds: number) {
 function nextStage(stage: string) {
   const index = CONTEST_STAGES.indexOf(stage as any);
   return CONTEST_STAGES[Math.min(index + 1, CONTEST_STAGES.length - 1)] || 'Stage 2';
+}
+
+function pad(value: number) {
+  return String(value).padStart(2, '0');
+}
+
+function toDatetimeLocal(value?: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatSchedule(value?: string) {
+  if (!value) return 'Not set';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not set';
+  return new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+function scheduleToIso(value: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+function statusLabel(summary: StageSummary) {
+  if (!summary.manualOpen) return 'CLOSED';
+  if (summary.scheduleStatus === 'not_started') return 'SCHEDULED';
+  if (summary.scheduleStatus === 'ended') return 'ENDED';
+  return 'OPEN NOW';
+}
+
+function statusClass(summary: StageSummary) {
+  if (summary.scheduleStatus === 'open') return 'badge badge-good';
+  if (summary.scheduleStatus === 'ended') return 'badge badge-warn';
+  return 'badge badge-warn';
 }
 
 export default function StageControlsPage() {
@@ -51,6 +95,7 @@ export default function StageControlsPage() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
+  const [scheduleDrafts, setScheduleDrafts] = useState<Record<string, ScheduleDraft>>({});
 
   const selectedIds = useMemo(() => Object.entries(selected).filter(([, checked]) => checked).map(([id]) => id), [selected]);
 
@@ -74,10 +119,16 @@ export default function StageControlsPage() {
       setMessage(json.error || 'Could not load stage controls. Make sure you are logged in as admin.');
       return;
     }
-    setSummaries(json.summaries || []);
+    const loadedSummaries = json.summaries || [];
+    setSummaries(loadedSummaries);
     setCandidates(json.completedCandidates || []);
     setActivePhase(json.activePhase || 'Stage 1');
     setSelected({});
+    const nextDrafts: Record<string, ScheduleDraft> = {};
+    for (const summary of loadedSummaries) {
+      nextDrafts[summary.stage] = { startsAt: toDatetimeLocal(summary.startsAt), endsAt: toDatetimeLocal(summary.endsAt) };
+    }
+    setScheduleDrafts(nextDrafts);
     setMessage('');
   }
 
@@ -86,8 +137,8 @@ export default function StageControlsPage() {
   async function setStageStatus(stage: string, isOpen: boolean, openOnlyThisStage = false) {
     const actionText = isOpen ? 'open' : 'close';
     const confirmText = openOnlyThisStage
-      ? `Open only ${stage} and close the other stages?`
-      : `${actionText.toUpperCase()} ${stage}?`;
+      ? `Open only ${stage} and close the other stages? The schedule still controls the exact start/end time.`
+      : `${actionText.toUpperCase()} ${stage}? The schedule still controls the exact start/end time.`;
     if (!confirm(confirmText)) return;
     setLoading(true);
     const res = await fetch('/api/admin/stages', {
@@ -101,7 +152,52 @@ export default function StageControlsPage() {
       setMessage(json.error || 'Could not update stage status.');
       return;
     }
-    setMessage(`${stage} has been ${isOpen ? 'opened' : 'closed'}.`);
+    setMessage(`${stage} has been ${isOpen ? 'opened' : 'closed'}. If a start/end schedule is set, candidates can only enter within that time window.`);
+    loadStageData(fromStage, category);
+  }
+
+  function updateScheduleDraft(stage: string, field: keyof ScheduleDraft, value: string) {
+    setScheduleDrafts(prev => ({ ...prev, [stage]: { ...(prev[stage] || { startsAt: '', endsAt: '' }), [field]: value } }));
+  }
+
+  async function saveSchedule(stage: string) {
+    const draft = scheduleDrafts[stage] || { startsAt: '', endsAt: '' };
+    if (draft.startsAt && draft.endsAt && new Date(draft.startsAt).getTime() >= new Date(draft.endsAt).getTime()) {
+      setMessage(`${stage}: start time must be earlier than end time.`);
+      return;
+    }
+    setLoading(true);
+    const res = await fetch('/api/admin/stages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'updateStageSchedule', stage, startsAt: scheduleToIso(draft.startsAt), endsAt: scheduleToIso(draft.endsAt) })
+    });
+    const json = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) {
+      setMessage(json.error || 'Could not save stage schedule.');
+      return;
+    }
+    setMessage(`${stage} schedule saved. Candidates assigned to ${stage} can only enter between the selected start and end time.`);
+    loadStageData(fromStage, category);
+  }
+
+  async function clearSchedule(stage: string) {
+    if (!confirm(`Clear the start and end time for ${stage}?`)) return;
+    setScheduleDrafts(prev => ({ ...prev, [stage]: { startsAt: '', endsAt: '' } }));
+    setLoading(true);
+    const res = await fetch('/api/admin/stages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'updateStageSchedule', stage, startsAt: '', endsAt: '' })
+    });
+    const json = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) {
+      setMessage(json.error || 'Could not clear stage schedule.');
+      return;
+    }
+    setMessage(`${stage} schedule cleared. Access will depend only on the Open/Close button.`);
     loadStageData(fromStage, category);
   }
 
@@ -119,7 +215,7 @@ export default function StageControlsPage() {
 
   async function promoteSelected() {
     if (!selectedIds.length) { setMessage('Select the qualified candidates first.'); return; }
-    if (!confirm(`Promote ${selectedIds.length} selected candidate(s) from ${fromStage} to ${toStage}? They will be able to login for ${toStage} when that stage is open.`)) return;
+    if (!confirm(`Promote ${selectedIds.length} selected candidate(s) from ${fromStage} to ${toStage}? They will be able to login for ${toStage} only when that stage is open and within the scheduled time.`)) return;
     setLoading(true);
     const res = await fetch('/api/admin/stages', {
       method: 'POST',
@@ -133,7 +229,7 @@ export default function StageControlsPage() {
       return;
     }
     setSelected({});
-    setMessage(`Promoted ${json.promotedCount} candidate(s) to ${toStage}. Open ${toStage} when you are ready for them to begin.`);
+    setMessage(`Promoted ${json.promotedCount} candidate(s) to ${toStage}. Open ${toStage} and set/confirm its schedule when you are ready.`);
     loadStageData(fromStage, category);
   }
 
@@ -163,25 +259,34 @@ export default function StageControlsPage() {
 
         <section className="card card-pad grid" style={{ marginBottom: 18 }}>
           <div>
-            <h1 style={{ marginBottom: 6 }}>Open, close and promote contest stages</h1>
-            <p className="muted">Use this page after each stage. Close the finished stage, select the qualified candidates, promote them to the next stage, then open the next stage.</p>
+            <h1 style={{ marginBottom: 6 }}>Open, close, schedule and promote contest stages</h1>
+            <p className="muted">Set a start and end date/time for each stage. A stage must be manually open and the current time must be within its schedule before candidates can enter.</p>
           </div>
 
           <div className="alert alert-info">
-            <strong>Current active phase:</strong> {activePhase}. Candidates can only enter the stage assigned to their user code, and that stage must be open.
+            <strong>Current active phase:</strong> {activePhase}. Time settings use the admin device time; for Ghana contests, enter Ghana local time.
           </div>
 
           <div className="grid grid-3">
             {summaries.map(summary => <div key={summary.stage} className="card card-pad" style={{ boxShadow: 'none' }}>
               <div className="flex between wrap">
                 <h3>{summary.stage}</h3>
-                <span className={summary.isOpen ? 'badge badge-good' : 'badge badge-warn'}>{summary.isOpen ? 'OPEN' : 'CLOSED'}</span>
+                <span className={statusClass(summary)}>{statusLabel(summary)}</span>
               </div>
-              <p className="small muted">{summary.note || 'No note'}</p>
+              <p className="small muted">{summary.accessMessage}</p>
+              <p className="small"><strong>Start:</strong> {formatSchedule(summary.startsAt)}<br /><strong>End:</strong> {formatSchedule(summary.endsAt)}</p>
               <p><strong>{summary.participantCount}</strong> assigned candidates<br /><strong>{summary.activeParticipantCount}</strong> open codes<br /><strong>{summary.completedCount}</strong> completed submissions</p>
-              <div className="flex wrap no-print">
+
+              <div className="grid" style={{ gap: 10 }}>
+                <label><span className="label">Stage Start Date/Time</span><input className="input" type="datetime-local" value={scheduleDrafts[summary.stage]?.startsAt || ''} onChange={e => updateScheduleDraft(summary.stage, 'startsAt', e.target.value)} /></label>
+                <label><span className="label">Stage End Date/Time</span><input className="input" type="datetime-local" value={scheduleDrafts[summary.stage]?.endsAt || ''} onChange={e => updateScheduleDraft(summary.stage, 'endsAt', e.target.value)} /></label>
+              </div>
+
+              <div className="flex wrap no-print" style={{ marginTop: 12 }}>
                 <button className="btn btn-primary" onClick={() => setStageStatus(summary.stage, true)} disabled={loading}>Open</button>
                 <button className="btn btn-light" onClick={() => setStageStatus(summary.stage, false)} disabled={loading}>Close</button>
+                <button className="btn btn-success" onClick={() => saveSchedule(summary.stage)} disabled={loading}>Save Time</button>
+                <button className="btn btn-light" onClick={() => clearSchedule(summary.stage)} disabled={loading}>Clear Time</button>
                 <button className="btn btn-danger" onClick={() => setStageStatus(summary.stage, true, true)} disabled={loading}>Open only this</button>
               </div>
             </div>)}
@@ -209,7 +314,7 @@ export default function StageControlsPage() {
             <button className="btn btn-primary" onClick={promoteSelected} disabled={loading || selectedIds.length === 0}>Promote Selected ({selectedIds.length})</button>
           </div>
 
-          <div className="alert alert-info"><strong>Recommended workflow:</strong> close {fromStage}, select qualified candidates below, promote them to {toStage}, then open {toStage}. Non-promoted candidates remain in {fromStage} and cannot enter {toStage}.</div>
+          <div className="alert alert-info"><strong>Recommended workflow:</strong> close {fromStage}, select qualified candidates below, promote them to {toStage}, set the start/end time for {toStage}, then open {toStage}. Non-promoted candidates remain in {fromStage} and cannot enter {toStage}.</div>
 
           <div className="table-wrap">
             <table>
