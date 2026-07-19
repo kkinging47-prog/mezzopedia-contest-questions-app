@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
-import { CONTEST_STAGES } from '@/lib/constants';
+import { CONTEST_STAGES, FINAL_TRIAL_STAGE } from '@/lib/constants';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage, percentage } from '@/lib/utils';
 import { getStageAccess, normalizeStageSettings, StageSettings } from '@/lib/stageAccess';
@@ -146,6 +146,31 @@ export async function POST(request: NextRequest) {
 
     await supabaseAdmin.from('admin_audit_logs').insert({ action: isOpen ? 'OPEN_CONTEST_STAGE' : 'CLOSE_CONTEST_STAGE', entity_type: 'stage', details: { stage, isOpen, openOnlyThisStage, nextActivePhase, note: 'Stage open/close updates code access. Stage schedule can still block access before start time or after end time.' } }).then(() => null);
     return Response.json({ success: true, activePhase: nextActivePhase, stageSettings: nextSettings });
+  }
+
+  if (action === 'assignAllToTrial') {
+    const { activePhase, stageSettings } = await readStageConfig();
+    const nextSettings = normalizeStageSettings(stageSettings);
+    nextSettings[FINAL_TRIAL_STAGE] = { ...nextSettings[FINAL_TRIAL_STAGE], isOpen: true, updatedAt: now, note: 'Final Trial is open for all assigned candidates before the main quiz.' };
+    const error = await writeStageConfig(FINAL_TRIAL_STAGE, nextSettings);
+    if (error) return jsonError(error.message, 500);
+
+    const { data: participants, error: participantReadError } = await supabaseAdmin.from('participants').select('id');
+    if (participantReadError) return jsonError(participantReadError.message, 500);
+    const participantIds = (participants || []).map((row: any) => row.id).filter(Boolean);
+
+    const { error: participantError } = await supabaseAdmin
+      .from('participants')
+      .update({ contest_stage: FINAL_TRIAL_STAGE, is_active: true, login_count: 0, last_login_at: null, updated_at: now })
+      .not('id', 'is', null);
+    if (participantError) return jsonError(participantError.message, 500);
+
+    if (participantIds.length) {
+      await supabaseAdmin.from('contest_sessions').update({ status: 'cancelled', active_login_token: null, active_user_agent: null, last_reauth_at: null, updated_at: now, proctoring_summary: { cancelledForFinalTrialReset: true } }).in('participant_id', participantIds).eq('status', 'in_progress').then(() => null);
+    }
+
+    await supabaseAdmin.from('admin_audit_logs').insert({ action: 'ASSIGN_ALL_TO_FINAL_TRIAL', entity_type: 'participant', details: { count: participantIds.length, previousActivePhase: activePhase, note: 'All participant codes were moved to Final Trial and opened for trial login.' } }).then(() => null);
+    return Response.json({ success: true, assignedCount: participantIds.length, activePhase: FINAL_TRIAL_STAGE, stageSettings: nextSettings });
   }
 
   if (action === 'updateStageSchedule') {
