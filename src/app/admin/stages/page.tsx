@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { CONTEST_STAGES, DEFAULT_CATEGORIES } from '@/lib/constants';
+import { CONTEST_STAGES, DEFAULT_CATEGORIES, FINAL_TRIAL_STAGE } from '@/lib/constants';
 
 type StageSummary = {
   stage: string;
@@ -44,7 +44,7 @@ function formatSeconds(seconds: number) {
 
 function nextStage(stage: string) {
   const index = CONTEST_STAGES.indexOf(stage as any);
-  return CONTEST_STAGES[Math.min(index + 1, CONTEST_STAGES.length - 1)] || 'Stage 2';
+  return CONTEST_STAGES[Math.min(index + 1, CONTEST_STAGES.length - 1)] || 'Stage 1';
 }
 
 function pad(value: number) {
@@ -88,9 +88,9 @@ export default function StageControlsPage() {
   const [summaries, setSummaries] = useState<StageSummary[]>([]);
   const [candidates, setCandidates] = useState<CompletedCandidate[]>([]);
   const [selected, setSelected] = useState<Record<string, boolean>>({});
-  const [activePhase, setActivePhase] = useState('Stage 1');
-  const [fromStage, setFromStage] = useState('Stage 1');
-  const [toStage, setToStage] = useState('Stage 2');
+  const [activePhase, setActivePhase] = useState(FINAL_TRIAL_STAGE);
+  const [fromStage, setFromStage] = useState(FINAL_TRIAL_STAGE);
+  const [toStage, setToStage] = useState('Stage 1');
   const [category, setCategory] = useState('All');
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
@@ -98,6 +98,7 @@ export default function StageControlsPage() {
   const [scheduleDrafts, setScheduleDrafts] = useState<Record<string, ScheduleDraft>>({});
 
   const selectedIds = useMemo(() => Object.entries(selected).filter(([, checked]) => checked).map(([id]) => id), [selected]);
+  const finalTrialSummary = summaries.find(summary => summary.stage === FINAL_TRIAL_STAGE);
 
   const filteredCandidates = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -122,7 +123,7 @@ export default function StageControlsPage() {
     const loadedSummaries = json.summaries || [];
     setSummaries(loadedSummaries);
     setCandidates(json.completedCandidates || []);
-    setActivePhase(json.activePhase || 'Stage 1');
+    setActivePhase(json.activePhase || FINAL_TRIAL_STAGE);
     setSelected({});
     const nextDrafts: Record<string, ScheduleDraft> = {};
     for (const summary of loadedSummaries) {
@@ -154,6 +155,27 @@ export default function StageControlsPage() {
     }
     setMessage(`${stage} has been ${isOpen ? 'opened' : 'closed'}. If a start/end schedule is set, candidates can only enter within that time window.`);
     loadStageData(fromStage, category);
+  }
+
+  async function assignAllToFinalTrial() {
+    const warning = 'This will move ALL participant codes to Final Trial, reset their login count, cancel only active unfinished sessions, and open Final Trial. Use this before the main quiz begins. Continue?';
+    if (!confirm(warning)) return;
+    setLoading(true);
+    const res = await fetch('/api/admin/stages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'assignAllToTrial' })
+    });
+    const json = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) {
+      setMessage(json.error || 'Could not assign candidates to Final Trial.');
+      return;
+    }
+    setFromStage(FINAL_TRIAL_STAGE);
+    setToStage('Stage 1');
+    setMessage(`Assigned ${json.assignedCount || 0} participant code(s) to Final Trial. Upload/confirm 10 Final Trial questions per category, set the trial time, then let candidates log in.`);
+    loadStageData(FINAL_TRIAL_STAGE, category);
   }
 
   function updateScheduleDraft(stage: string, field: keyof ScheduleDraft, value: string) {
@@ -260,11 +282,21 @@ export default function StageControlsPage() {
         <section className="card card-pad grid" style={{ marginBottom: 18 }}>
           <div>
             <h1 style={{ marginBottom: 6 }}>Open, close, schedule and promote contest stages</h1>
-            <p className="muted">Set a start and end date/time for each stage. A stage must be manually open and the current time must be within its schedule before candidates can enter.</p>
+            <p className="muted">Final Trial is now a separate stage before Stage 1. Upload 10 trial questions per category with phase/stage set to Final Trial, assign candidates to Final Trial, then promote them to Stage 1 before the main quiz.</p>
           </div>
 
           <div className="alert alert-info">
             <strong>Current active phase:</strong> {activePhase}. Time settings use the admin device time; for Ghana contests, enter Ghana local time.
+          </div>
+
+          <div className="card card-pad" style={{ boxShadow: 'none', border: '1px solid rgba(37,99,235,0.25)' }}>
+            <h2 style={{ marginBottom: 6 }}>Final Trial setup</h2>
+            <p className="muted">Use this before the main quiz. It moves every participant code to Final Trial so they can practise with your 10 trial questions per category. After the trial, choose Final Trial as the completed stage below, select candidates, and promote them to Stage 1.</p>
+            <div className="flex wrap no-print">
+              <button className="btn btn-primary" onClick={assignAllToFinalTrial} disabled={loading}>Assign All Participants to Final Trial</button>
+              <button className="btn btn-light" onClick={() => { setFromStage(FINAL_TRIAL_STAGE); setToStage('Stage 1'); loadStageData(FINAL_TRIAL_STAGE, category); }} disabled={loading}>View Final Trial Results</button>
+            </div>
+            {finalTrialSummary && <p className="small muted" style={{ marginTop: 10 }}>Final Trial currently has <strong>{finalTrialSummary.participantCount}</strong> assigned participant code(s), <strong>{finalTrialSummary.activeParticipantCount}</strong> open code(s), and <strong>{finalTrialSummary.completedCount}</strong> completed submission(s).</p>}
           </div>
 
           <div className="grid grid-3">
@@ -296,7 +328,7 @@ export default function StageControlsPage() {
         <section className="card card-pad grid">
           <div>
             <h2 style={{ marginBottom: 6 }}>Promote qualified candidates</h2>
-            <p className="muted">Select completed candidates from the finished stage and promote only those who qualified to the next stage.</p>
+            <p className="muted">Select completed candidates from the finished stage and promote only those who qualified to the next stage. For the trial, choose Final Trial as the completed stage and promote candidates to Stage 1.</p>
           </div>
 
           <div className="grid grid-4">
@@ -314,7 +346,7 @@ export default function StageControlsPage() {
             <button className="btn btn-primary" onClick={promoteSelected} disabled={loading || selectedIds.length === 0}>Promote Selected ({selectedIds.length})</button>
           </div>
 
-          <div className="alert alert-info"><strong>Recommended workflow:</strong> close {fromStage}, select qualified candidates below, promote them to {toStage}, set the start/end time for {toStage}, then open {toStage}. Non-promoted candidates remain in {fromStage} and cannot enter {toStage}.</div>
+          <div className="alert alert-info"><strong>Recommended workflow:</strong> upload Final Trial questions, assign all participants to Final Trial, set/open Final Trial, allow trial submissions, promote them from Final Trial to Stage 1, set/open Stage 1, then start the main quiz.</div>
 
           <div className="table-wrap">
             <table>
