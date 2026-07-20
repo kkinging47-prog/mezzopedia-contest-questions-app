@@ -6,8 +6,28 @@ import { jsPDF } from 'jspdf';
 import { DEFAULT_CATEGORIES } from '@/lib/constants';
 import { CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, downloadCertificate, normalizeCertificateSettings } from '@/lib/certificatePdf';
 
+type ScriptOption = { id: string; text: string; imageUrl?: string };
+type ScriptItem = {
+  number: number;
+  questionId: string;
+  category: string;
+  stage: string;
+  questionText: string;
+  questionImageUrl?: string;
+  options: ScriptOption[];
+  selectedOptionId: string;
+  selectedAnswer: string;
+  correctOptionId: string;
+  correctAnswer: string;
+  isCorrect: boolean;
+  points: number;
+  pointsAwarded: number;
+  explanation?: string;
+};
+
 type Result = {
   participant: { name: string; usercode: string; category: string; paymentStatus: string };
+  stage?: string;
   score: number;
   maxScore: number;
   totalQuestions: number;
@@ -15,6 +35,7 @@ type Result = {
   timeUsedSeconds: number;
   submittedAt: string;
   proctoringSummary: { riskLevel?: string; total?: number; critical?: number; byType?: Record<string, number> };
+  script?: ScriptItem[];
 };
 
 export default function ResultsPage() {
@@ -54,6 +75,47 @@ export default function ResultsPage() {
     setResult(json.result);
   }
 
+  function addWrappedText(doc: jsPDF, text: string, x: number, y: number, width = 170, lineHeight = 5) {
+    const lines = doc.splitTextToSize(text || '', width);
+    doc.text(lines, x, y);
+    return y + lines.length * lineHeight;
+  }
+
+  function ensureSpace(doc: jsPDF, y: number, needed = 28) {
+    if (y + needed > 285) {
+      doc.addPage();
+      return 18;
+    }
+    return y;
+  }
+
+  function addScriptToPdf(doc: jsPDF, startY: number) {
+    if (!result?.script?.length) return startY;
+    let y = ensureSpace(doc, startY, 20);
+    doc.setFontSize(14);
+    doc.text('Candidate Answer Script', 20, y);
+    y += 8;
+    doc.setFontSize(9);
+
+    for (const item of result.script) {
+      y = ensureSpace(doc, y, 45);
+      doc.setFont('helvetica', 'bold');
+      y = addWrappedText(doc, `${item.number}. ${item.questionText}`, 20, y, 170, 4.5);
+      doc.setFont('helvetica', 'normal');
+      if (item.questionImageUrl) y = addWrappedText(doc, `Question image: ${item.questionImageUrl}`, 20, y + 1, 170, 4.5);
+      for (const option of item.options || []) {
+        y = addWrappedText(doc, `${option.id}. ${option.text || 'Image option'}${option.imageUrl ? ` (${option.imageUrl})` : ''}`, 24, y + 1, 160, 4.5);
+      }
+      const status = item.isCorrect ? 'Correct' : 'Wrong';
+      y = addWrappedText(doc, `Selected: ${item.selectedOptionId || 'Not answered'} ${item.selectedAnswer ? `- ${item.selectedAnswer}` : ''}`, 20, y + 2, 170, 4.5);
+      y = addWrappedText(doc, `Correct: ${item.correctOptionId} ${item.correctAnswer ? `- ${item.correctAnswer}` : ''}`, 20, y + 1, 170, 4.5);
+      y = addWrappedText(doc, `Points: ${item.pointsAwarded}/${item.points} • ${status}`, 20, y + 1, 170, 4.5);
+      if (item.explanation) y = addWrappedText(doc, `Explanation: ${item.explanation}`, 20, y + 1, 170, 4.5);
+      y += 4;
+    }
+    return y;
+  }
+
   function downloadPdf() {
     if (!result || !analysis) return;
     const doc = new jsPDF();
@@ -62,14 +124,30 @@ export default function ResultsPage() {
     doc.setFontSize(12);
     doc.text(`Name: ${result.participant.name}`, 20, 38);
     doc.text(`Category: ${result.participant.category}`, 20, 48);
-    doc.text(`Usercode: ${result.participant.usercode}`, 20, 58);
-    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, 68);
-    doc.text(`Time used: ${formatTime(result.timeUsedSeconds)}`, 20, 78);
-    doc.text(`Submitted: ${new Date(result.submittedAt).toLocaleString()}`, 20, 88);
-    doc.text('Result Analysis:', 20, 106);
-    doc.text(doc.splitTextToSize(analysis.summary, 170), 20, 116);
-    doc.text(doc.splitTextToSize(analysis.advice, 170), 20, 142);
-    doc.save(`mezzopedia-result-${result.participant.usercode}.pdf`);
+    doc.text(`Stage: ${result.stage || ''}`, 20, 58);
+    doc.text(`Usercode: ${result.participant.usercode}`, 20, 68);
+    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, 78);
+    doc.text(`Time used: ${formatTime(result.timeUsedSeconds)}`, 20, 88);
+    doc.text(`Submitted: ${new Date(result.submittedAt).toLocaleString()}`, 20, 98);
+    doc.text('Result Analysis:', 20, 116);
+    doc.text(doc.splitTextToSize(analysis.summary, 170), 20, 126);
+    doc.text(doc.splitTextToSize(analysis.advice, 170), 20, 152);
+    addScriptToPdf(doc, 176);
+    doc.save(`mezzopedia-result-and-script-${result.participant.usercode}.pdf`);
+  }
+
+  function downloadScriptPdf() {
+    if (!result) return;
+    const doc = new jsPDF();
+    doc.setFontSize(18);
+    doc.text('Mezzopedia Candidate Answer Script', 20, 20);
+    doc.setFontSize(11);
+    doc.text(`Name: ${result.participant.name}`, 20, 36);
+    doc.text(`Category: ${result.participant.category}`, 20, 46);
+    doc.text(`Stage: ${result.stage || ''}`, 20, 56);
+    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, 66);
+    addScriptToPdf(doc, 84);
+    doc.save(`mezzopedia-script-${result.participant.usercode}.pdf`);
   }
 
   async function downloadCertificatePdf() {
@@ -79,11 +157,11 @@ export default function ResultsPage() {
 
   return (
     <main className="math-bg centered">
-      <div className="container" style={{ maxWidth: 900 }}>
+      <div className="container" style={{ maxWidth: 1000 }}>
         <div className="card card-pad">
           <div className="flex between wrap no-print">
             <Link href="/" className="badge">← Back to Home</Link>
-            {result && <div className="flex wrap"><button className="btn btn-light" onClick={() => window.print()}>Print</button><button className="btn btn-primary" onClick={downloadPdf}>Download Result PDF</button><button className="btn btn-success" onClick={downloadCertificatePdf}>Download Certificate PDF</button></div>}
+            {result && <div className="flex wrap"><button className="btn btn-light" onClick={() => window.print()}>Print</button><button className="btn btn-primary" onClick={downloadPdf}>Download Result + Script PDF</button><button className="btn btn-light" onClick={downloadScriptPdf}>Download Script PDF</button><button className="btn btn-success" onClick={downloadCertificatePdf}>Download Certificate PDF</button></div>}
           </div>
 
           {!result ? (
@@ -102,7 +180,7 @@ export default function ResultsPage() {
             <section style={{ marginTop: 18 }}>
               <span className="badge">Official Result</span>
               <h1 style={{ fontSize: '2.4rem', marginTop: 12 }}>{result.participant.name}</h1>
-              <p className="muted">{result.participant.category} • {result.participant.usercode}</p>
+              <p className="muted">{result.participant.category} • {result.stage || 'Contest'} • {result.participant.usercode}</p>
 
               <div className="grid grid-3" style={{ margin: '24px 0' }}>
                 <Metric title="Score" value={`${result.score}/${result.maxScore}`} />
@@ -116,7 +194,34 @@ export default function ResultsPage() {
                 <p>{analysis?.advice}</p>
                 <p className="small muted">Proctoring risk: {result.proctoringSummary?.riskLevel || 'LOW'} • Events logged: {result.proctoringSummary?.total || 0}</p>
               </div>
-              <div className="alert alert-info no-print" style={{ marginTop: 18 }}>You can download your official certificate of participation as a PDF using the button above.</div>
+
+              <div className="card card-pad" style={{ marginTop: 18, boxShadow: 'none' }}>
+                <h2>Answer Script</h2>
+                <p className="muted">This shows each question, the options, the answer selected by the candidate, the correct answer and the points awarded.</p>
+                {!result.script?.length ? <div className="alert alert-info">The answer script is not available for this result.</div> : <div className="grid">
+                  {result.script.map(item => <div key={item.questionId} className="card card-pad" style={{ boxShadow: 'none', border: `1px solid ${item.isCorrect ? '#bbf7d0' : '#fecaca'}` }}>
+                    <div className="flex between wrap">
+                      <strong>Question {item.number}</strong>
+                      <span className={item.isCorrect ? 'badge badge-good' : 'badge badge-warn'}>{item.pointsAwarded}/{item.points} point(s) • {item.isCorrect ? 'Correct' : 'Wrong'}</span>
+                    </div>
+                    <p style={{ whiteSpace: 'pre-wrap' }}>{item.questionText}</p>
+                    {item.questionImageUrl && <img src={item.questionImageUrl} alt={`Question ${item.number}`} className="question-image" />}
+                    <ol style={{ paddingLeft: 20 }}>
+                      {(item.options || []).map(option => <li key={option.id} style={{ marginBottom: 6 }}>
+                        <strong>{option.id}.</strong> {option.text || 'Image option'}
+                        {option.imageUrl && <div><img src={option.imageUrl} alt={`Option ${option.id}`} className="question-image" style={{ maxHeight: 120 }} /></div>}
+                      </li>)}
+                    </ol>
+                    <div className="grid grid-2">
+                      <div className="alert alert-info"><strong>Selected answer:</strong><br />{item.selectedOptionId || 'Not answered'} {item.selectedAnswer ? `- ${item.selectedAnswer}` : ''}</div>
+                      <div className="alert alert-success"><strong>Correct answer:</strong><br />{item.correctOptionId} {item.correctAnswer ? `- ${item.correctAnswer}` : ''}</div>
+                    </div>
+                    {item.explanation && <p className="small muted"><strong>Explanation:</strong> {item.explanation}</p>}
+                  </div>)}
+                </div>}
+              </div>
+
+              <div className="alert alert-info no-print" style={{ marginTop: 18 }}>You can download your official certificate of participation and the full answer script as PDF using the buttons above.</div>
             </section>
           )}
         </div>
