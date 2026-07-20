@@ -148,8 +148,9 @@ export default function AdminQuickLinks() {
   return (
     <div className="no-print" style={{ position: 'fixed', left: 18, bottom: 18, zIndex: 50, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8, maxWidth: 'calc(100vw - 36px)' }}>
       {open && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 10, borderRadius: 18, background: 'rgba(255,255,255,0.96)', boxShadow: '0 14px 40px rgba(15, 23, 42, 0.18)', border: '1px solid rgba(148, 163, 184, 0.35)', maxWidth: 980 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 10, borderRadius: 18, background: 'rgba(255,255,255,0.96)', boxShadow: '0 14px 40px rgba(15, 23, 42, 0.18)', border: '1px solid rgba(148, 163, 184, 0.35)', maxWidth: 1040 }}>
           <a className="btn btn-light" href="/admin">Admin</a>
+          <a className="btn btn-primary" href="/admin/results">Results</a>
           <a className="btn btn-primary" href="/admin/participants">Participants</a>
           <a className="btn btn-primary" href="/admin/participants-import">Participants Import</a>
           <a className="btn btn-primary" href="/admin/bulk-questions">Bulk Questions</a>
