@@ -47,6 +47,10 @@ function fileSafe(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'file';
 }
 
+function codeKey(value: string) {
+  return value.trim().toLowerCase();
+}
+
 export default function ParticipantsImportPage() {
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -54,11 +58,17 @@ export default function ParticipantsImportPage() {
   const [error, setError] = useState('');
   const [rows, setRows] = useState<ParticipantImportRow[]>([]);
   const [fileName, setFileName] = useState('');
+  const [importMode, setImportMode] = useState<'mergeUpdate' | 'addOnly'>('mergeUpdate');
+  const [existingCodes, setExistingCodes] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetch('/api/admin/me').then(res => {
       if (!res.ok) throw new Error('Admin login required.');
       setReady(true);
+      return fetch('/api/admin/participants').then(r => r.json()).then(json => {
+        const codes = new Set<string>((json.participants || []).map((item: any) => codeKey(item.usercode || '')));
+        setExistingCodes(codes);
+      });
     }).catch(err => setError(err.message || 'Could not verify admin session.'));
   }, []);
 
@@ -90,10 +100,22 @@ export default function ParticipantsImportPage() {
       const workbook = XLSX.read(buffer, { type: 'array' });
       const parsed = parseSheet(workbook);
       setRows(parsed);
-      setMessage(`Loaded ${parsed.length} row(s) from ${file.name}. Review the preview, then click Import Participants.`);
+      const existingCount = parsed.filter(row => existingCodes.has(codeKey(row.usercode))).length;
+      const duplicateInFileCount = duplicateCodes(parsed).length;
+      setMessage(`Loaded ${parsed.length} row(s) from ${file.name}. ${existingCount} row(s) match existing codes. ${duplicateInFileCount} duplicate code(s) found inside this file.`);
     } catch {
       setError('Could not read the Excel/CSV file. Use .xlsx, .xls or .csv with headings.');
     }
+  }
+
+  function duplicateCodes(list: ParticipantImportRow[]) {
+    const counts = new Map<string, number>();
+    for (const row of list) {
+      const key = codeKey(row.usercode);
+      if (!key) continue;
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return Array.from(counts.entries()).filter(([, count]) => count > 1).map(([key]) => key);
   }
 
   function downloadTemplate() {
@@ -117,24 +139,42 @@ export default function ParticipantsImportPage() {
     const invalidCount = rows.length - validRows.length;
     if (invalidCount > 0 && !confirm(`${invalidCount} row(s) are missing required fields and will be skipped. Continue?`)) return;
 
+    const duplicatesInsideFile = duplicateCodes(validRows);
+    if (duplicatesInsideFile.length) {
+      setError(`Duplicate usercode(s) found inside this file: ${duplicatesInsideFile.join(', ')}. Fix the file so every usercode appears only once.`);
+      return;
+    }
+
+    const existingCount = validRows.filter(row => existingCodes.has(codeKey(row.usercode))).length;
+    const confirmText = importMode === 'mergeUpdate'
+      ? `Merge & Update will add new participants and update ${existingCount} existing record(s). It will not delete any saved participant. Continue?`
+      : `Add New Only will skip ${existingCount} existing record(s) and add only new codes. Continue?`;
+    if (!confirm(confirmText)) return;
+
     setLoading(true);
     setError('');
     const res = await fetch('/api/admin/participants', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ participants: validRows })
+      body: JSON.stringify({ participants: validRows, importMode })
     });
     const json = await res.json().catch(() => ({}));
     setLoading(false);
     if (!res.ok) { setError(json.error || 'Import failed.'); return; }
     setRows([]);
     setFileName('');
-    setMessage(`Imported ${json.imported} participant(s) successfully.`);
+    setMessage(`Import complete. Inserted: ${json.inserted || 0}. Updated: ${json.updated || 0}. Skipped existing: ${json.skippedExisting || 0}. Saved data was not deleted.`);
+    fetch('/api/admin/participants').then(r => r.json()).then(data => {
+      setExistingCodes(new Set<string>((data.participants || []).map((item: any) => codeKey(item.usercode || ''))));
+    }).catch(() => null);
   }
 
   if (error && !ready) {
     return <main className="math-bg centered"><div className="card card-pad"><div className="alert alert-error">{error}</div><a className="btn btn-primary" href="/admin">Back to Admin</a></div></main>;
   }
+
+  const existingCount = rows.filter(row => existingCodes.has(codeKey(row.usercode))).length;
+  const validCount = rows.filter(row => row.category && row.name && row.usercode && row.password).length;
 
   return (
     <main className="math-bg" style={{ paddingBottom: 40 }}>
@@ -143,6 +183,7 @@ export default function ParticipantsImportPage() {
           <strong>Participant Excel Import</strong>
           <div className="flex wrap">
             <a className="btn btn-light" href="/admin">Back to Admin</a>
+            <a className="btn btn-primary" href="/admin/participants">Participant Manager</a>
             <button className="btn btn-light" onClick={downloadTemplate}>Download Excel Template</button>
           </div>
         </nav>
@@ -158,18 +199,28 @@ export default function ParticipantsImportPage() {
           </div>
 
           <div className="alert alert-info">
-            Unpaid or pending participants can enter <strong>Final Trial</strong>, but they will be blocked from Stage 1, Stage 2 and Stage 3 until payment_status is <strong>paid</strong>.
+            <strong>Merge & Update is safe:</strong> it adds new codes and updates matching existing codes. It does not delete previously saved participants.
           </div>
 
-          <label>
-            <span className="label">Excel/CSV File</span>
-            <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} />
-          </label>
+          <div className="grid grid-2">
+            <label>
+              <span className="label">Import Mode</span>
+              <select className="select" value={importMode} onChange={e => setImportMode(e.target.value as 'mergeUpdate' | 'addOnly')}>
+                <option value="mergeUpdate">Merge & Update existing records</option>
+                <option value="addOnly">Add new only, skip existing records</option>
+              </select>
+            </label>
+            <label>
+              <span className="label">Excel/CSV File</span>
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} />
+            </label>
+          </div>
           {fileName && <p className="small muted">Selected file: {fileName}</p>}
 
-          <div className="grid grid-3">
+          <div className="grid grid-4">
             <Metric title="Rows Loaded" value={String(rows.length)} />
-            <Metric title="Valid Rows" value={String(rows.filter(row => row.category && row.name && row.usercode && row.password).length)} />
+            <Metric title="Valid Rows" value={String(validCount)} />
+            <Metric title="Existing Codes" value={String(existingCount)} />
             <Metric title="Default Stage" value={FINAL_TRIAL_STAGE} />
           </div>
 
@@ -186,7 +237,8 @@ export default function ParticipantsImportPage() {
               <thead><tr><th>#</th><th>Category</th><th>Name</th><th>Usercode</th><th>Password</th><th>Payment</th><th>Stage</th><th>Status</th></tr></thead>
               <tbody>{rows.map((row, index) => {
                 const valid = row.category && row.name && row.usercode && row.password;
-                return <tr key={`${row.usercode}-${index}`}><td>{index + 1}</td><td>{row.category}</td><td>{row.name}</td><td><strong>{row.usercode}</strong></td><td>{row.password ? 'Provided' : ''}</td><td>{row.paymentStatus}</td><td>{row.contestStage}</td><td>{valid ? 'Ready' : 'Missing required field'}</td></tr>;
+                const exists = existingCodes.has(codeKey(row.usercode));
+                return <tr key={`${row.usercode}-${index}`}><td>{index + 1}</td><td>{row.category}</td><td>{row.name}</td><td><strong>{row.usercode}</strong></td><td>{row.password ? 'Provided' : ''}</td><td>{row.paymentStatus}</td><td>{row.contestStage}</td><td>{valid ? (exists ? (importMode === 'mergeUpdate' ? 'Will update existing' : 'Will skip existing') : 'Will add new') : 'Missing required field'}</td></tr>;
               })}</tbody>
             </table>
           </div>
