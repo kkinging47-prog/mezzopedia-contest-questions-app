@@ -3,24 +3,55 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { DEFAULT_CATEGORIES } from '@/lib/constants';
+
+type CodeLookup = {
+  name: string;
+  usercode: string;
+  category: string;
+  paymentStatus: string;
+  contestStage: string;
+  isActive: boolean;
+};
 
 export default function SignInPage() {
   const router = useRouter();
-  const [category, setCategory] = useState(DEFAULT_CATEGORIES[0]);
-  const [name, setName] = useState('');
+  const [participant, setParticipant] = useState<CodeLookup | null>(null);
   const [usercode, setUsercode] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [lookupLoading, setLookupLoading] = useState(false);
   const [error, setError] = useState('');
+  const [lookupMessage, setLookupMessage] = useState('');
 
   useEffect(() => {
-    setName('');
     setUsercode('');
     setPassword('');
     fetch('/api/auth/participant/logout', { method: 'POST' }).catch(() => null);
   }, []);
+
+  async function lookupCode(code = usercode) {
+    const cleanCode = code.trim();
+    setParticipant(null);
+    setLookupMessage('');
+    if (cleanCode.length < 3) return;
+
+    setLookupLoading(true);
+    const res = await fetch('/api/auth/participant/lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ usercode: cleanCode })
+    });
+    const json = await res.json().catch(() => ({}));
+    setLookupLoading(false);
+
+    if (!res.ok || !json.success) {
+      setLookupMessage(json.error || 'Code not found yet. Check the code and try again.');
+      return;
+    }
+    setParticipant(json.participant);
+    setLookupMessage('Code found. Confirm your name and enter your password.');
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -30,7 +61,7 @@ export default function SignInPage() {
     const res = await fetch('/api/auth/participant', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category, name, usercode, password })
+      body: JSON.stringify({ usercode, password })
     });
     const json = await res.json().catch(() => ({}));
     setLoading(false);
@@ -39,7 +70,6 @@ export default function SignInPage() {
       setError(json.error || 'Could not sign in.');
       return;
     }
-    setName('');
     setUsercode('');
     setPassword('');
     router.push('/test');
@@ -51,25 +81,34 @@ export default function SignInPage() {
         <form className="card card-pad" onSubmit={submit} autoComplete="off">
           <Link href="/" className="badge no-print">← Back to Home</Link>
           <h1 style={{ fontSize: '2.2rem', marginTop: 18 }}>Participant Sign In</h1>
-          <p className="muted">Enter your registered category, name, unique code and password. You can continue an unfinished test, but completed tests cannot be retaken.</p>
+          <p className="muted">Enter only your unique code and password. The system will automatically find your name, category and assigned stage.</p>
 
           {error && <div className="alert alert-error">{error}</div>}
+          {lookupMessage && <div className={participant ? 'alert alert-success' : 'alert alert-info'}>{lookupMessage}</div>}
 
           <div className="grid">
             <label>
-              <span className="label">Category</span>
-              <select className="select" value={category} onChange={e => setCategory(e.target.value)}>
-                {DEFAULT_CATEGORIES.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-              </select>
-            </label>
-            <label>
-              <span className="label">Name</span>
-              <input className="input" value={name} onChange={e => setName(e.target.value)} placeholder="Your registered name" autoComplete="off" />
-            </label>
-            <label>
               <span className="label">Usercode</span>
-              <input className="input" value={usercode} onChange={e => setUsercode(e.target.value)} placeholder="e.g. MZP-001" autoComplete="off" required />
+              <div className="flex">
+                <input
+                  className="input"
+                  value={usercode}
+                  onChange={e => { setUsercode(e.target.value); setParticipant(null); setLookupMessage(''); }}
+                  onBlur={() => lookupCode()}
+                  placeholder="e.g. MZP-001"
+                  autoComplete="off"
+                  required
+                />
+                <button type="button" className="btn btn-light" onClick={() => lookupCode()} disabled={lookupLoading || !usercode.trim()}>{lookupLoading ? 'Checking...' : 'Check'}</button>
+              </div>
             </label>
+
+            {participant && <div className="card card-pad" style={{ boxShadow: 'none', background: '#f7f9fd' }}>
+              <strong>{participant.name}</strong>
+              <p className="small muted" style={{ margin: '6px 0 0' }}>Category: {participant.category}<br />Assigned stage: {participant.contestStage}<br />Payment: {participant.paymentStatus}</p>
+              {participant.paymentStatus !== 'paid' && participant.contestStage !== 'Final Trial' && <div className="alert alert-error" style={{ marginTop: 10 }}>Payment is not confirmed. You can use Final Trial, but the main contest stages require paid status.</div>}
+            </div>}
+
             <label>
               <span className="label">Password</span>
               <div className="flex">
