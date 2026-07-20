@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
-import { COOKIE_NAMES, QUESTION_COUNT_OPTIONS, TEST_DURATION_MINUTES } from '@/lib/constants';
+import { COOKIE_NAMES, FINAL_TRIAL_STAGE, QUESTION_COUNT_OPTIONS, TEST_DURATION_MINUTES } from '@/lib/constants';
 import { setSecureCookie, signToken, verifyPassword } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeCategory, normalizeContestStage, shuffle } from '@/lib/utils';
@@ -27,6 +27,29 @@ function signature(ids: string[]) {
 
 function setSignature(ids: string[]) {
   return [...ids].sort().join('|');
+}
+
+function isPaidStatus(value: unknown) {
+  return String(value || '').trim().toLowerCase() === 'paid';
+}
+
+async function findParticipantByCodeAndPassword(usercode: string, password: string, category?: string) {
+  let query = supabaseAdmin.from('participants').select('*').ilike('usercode', usercode);
+  if (category) query = query.eq('category', category);
+  const { data, error } = await query.limit(25);
+  if (error) return { participant: null, error };
+
+  const candidates = data || [];
+  const matches = [];
+  for (const candidate of candidates) {
+    if (await verifyPassword(password, candidate.password_hash)) matches.push(candidate);
+  }
+
+  if (matches.length === 1) return { participant: matches[0], error: null };
+  if (matches.length > 1) {
+    return { participant: null, error: { message: 'This user code matches more than one participant. Please contact the contest administrator to make your user code unique.' } };
+  }
+  return { participant: null, error: null };
 }
 
 async function pickUniqueQuestionOrder(questionIds: string[], requestedCount: number, category: string, stage: string) {
@@ -67,28 +90,34 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const usercode = String(body.usercode || '').trim();
   const password = String(body.password || '');
-  const category = normalizeCategory(String(body.category || ''));
+  const submittedCategory = normalizeCategory(String(body.category || ''));
   const enteredName = String(body.name || '').trim();
   const userAgent = request.headers.get('user-agent') || '';
 
-  if (!usercode || !password || !category) return jsonError('Enter your category, usercode and password.');
+  if (!usercode || !password) return jsonError('Enter your user code and password.');
 
-  const { data: participant, error } = await supabaseAdmin
-    .from('participants')
-    .select('*')
-    .ilike('usercode', usercode)
-    .eq('category', category)
-    .maybeSingle();
+  const found = await findParticipantByCodeAndPassword(usercode, password, submittedCategory || undefined);
+  if (found.error) return jsonError(found.error.message, 500);
+  const participant = found.participant;
+  if (!participant) return jsonError('Invalid user code or password.', 401);
 
-  if (error) return jsonError(error.message, 500);
-  if (!participant) return jsonError('Invalid code, password or category.', 401);
-
-  const passwordOk = await verifyPassword(password, participant.password_hash);
-  if (!passwordOk) return jsonError('Invalid code, password or category.', 401);
-
+  const category = participant.category;
   const stage = normalizeContestStage(participant.contest_stage || 'Stage 1');
   if (stage !== participant.contest_stage) {
     await supabaseAdmin.from('participants').update({ contest_stage: stage }).eq('id', participant.id).then(() => null);
+  }
+
+  if (stage !== FINAL_TRIAL_STAGE && !isPaidStatus(participant.payment_status)) {
+    await supabaseAdmin.from('participant_login_events').insert({
+      participant_id: participant.id,
+      usercode: participant.usercode,
+      category: participant.category,
+      contest_stage: stage,
+      event_type: 'LOGIN_BLOCKED_PAYMENT_NOT_CONFIRMED',
+      user_agent: userAgent,
+      details: { paymentStatus: participant.payment_status || 'unpaid', message: 'Payment must be confirmed before the main contest stages.' }
+    }).then(() => null);
+    return jsonError(`Your payment status is ${participant.payment_status || 'unpaid'}. You can use the Final Trial, but the main contest stages require confirmed payment.`, 403);
   }
 
   const { data: configRows } = await supabaseAdmin
@@ -145,13 +174,13 @@ export async function POST(request: Request) {
     let { data: questions, error: qError } = await questionQuery;
     if (qError) return jsonError(qError.message, 500);
 
-    if (!questions || questions.length === 0) {
+    if ((!questions || questions.length === 0) && stage !== FINAL_TRIAL_STAGE) {
       const fallback = await supabaseAdmin.from('questions').select('id').eq('category', category).eq('is_active', true);
       questions = fallback.data || [];
       if (fallback.error) return jsonError(fallback.error.message, 500);
     }
 
-    if (!questions || questions.length === 0) return jsonError('No active questions have been uploaded for this category yet.', 404);
+    if (!questions || questions.length === 0) return jsonError(`No active questions have been uploaded for ${category} in ${stage} yet.`, 404);
 
     const requestedCount = questionLimitFor(questionCountSettings, stage, category);
     const selected = await pickUniqueQuestionOrder(questions.map(q => q.id), requestedCount, category, stage);
@@ -182,7 +211,6 @@ export async function POST(request: Request) {
       await supabaseAdmin.from('contest_sessions').update({ status: 'expired', updated_at: now.toISOString() }).eq('id', session.id);
       return jsonError('Time is up for this test session. Please contact the contest administrator.', 403);
     }
-    // Important: keep the original question order and saved answers. Do not reshuffle resumed sessions.
   }
 
   const previousLogins = Number(participant.login_count || 0);
@@ -192,14 +220,14 @@ export async function POST(request: Request) {
   await supabaseAdmin.from('participants').update({ last_login_at: now.toISOString(), login_count: previousLogins + 1 }).eq('id', participant.id);
   await supabaseAdmin.from('contest_sessions').update({ active_login_token: loginToken, active_user_agent: userAgent, last_reauth_at: now.toISOString(), answers: resumedAnswers, updated_at: now.toISOString() }).eq('id', session.id);
 
-  await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, resumedExistingSession: loginType === 'LOGIN_RESUME_EXISTING_SESSION', questionCount: session.total_questions } }).then(() => null);
+  await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, resumedExistingSession: loginType === 'LOGIN_RESUME_EXISTING_SESSION', questionCount: session.total_questions, paymentStatus: participant.payment_status || 'unpaid' } }).then(() => null);
 
   if (previousLogins > 0) {
     await supabaseAdmin.from('proctoring_events').insert({ session_id: session.id, participant_id: participant.id, event_type: 'MULTIPLE_OR_REPEAT_USERCODE_LOGIN', severity: 'high', details: { previousLogins, message: 'The same usercode logged in again. Older browser sessions were invalidated, but the latest login resumes the existing session.' }, user_agent: userAgent }).then(() => null);
   }
 
   const token = await signToken({ type: 'participant', sessionId: session.id, participantId: participant.id, loginToken }, TEST_DURATION_MINUTES * 60 + 60 * 24);
-  const response = NextResponse.json({ success: true, participant: { name: participant.name, category: participant.category, usercode: participant.usercode, contestStage: stage }, session: { id: session.id, status: session.status, totalQuestions: session.total_questions, resumed: loginType === 'LOGIN_RESUME_EXISTING_SESSION' } });
+  const response = NextResponse.json({ success: true, participant: { name: participant.name, category: participant.category, usercode: participant.usercode, contestStage: stage, paymentStatus: participant.payment_status || 'unpaid' }, session: { id: session.id, status: session.status, totalQuestions: session.total_questions, resumed: loginType === 'LOGIN_RESUME_EXISTING_SESSION' } });
   setSecureCookie(response, COOKIE_NAMES.participant, token, TEST_DURATION_MINUTES * 60 + 60 * 24);
   return response;
 }
