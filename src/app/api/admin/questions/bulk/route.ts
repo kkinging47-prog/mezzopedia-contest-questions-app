@@ -64,6 +64,10 @@ function option(id: string, text: unknown, imageUrl: unknown): BulkOption | null
   return { id, text: cleanText, ...(cleanImage ? { imageUrl: cleanImage } : {}) };
 }
 
+function questionKey(row: Record<string, unknown>) {
+  return `${row.category}|${row.phase}|${String(row.question_text || '').trim().toLowerCase()}`;
+}
+
 function cleanRow(row: BulkQuestionInput): CleanRowResult {
   const category = normalizeCategory(row.category);
   const phase = normalizeContestStage(row.stage || row.phase || 'Stage 1');
@@ -104,15 +108,60 @@ function cleanRow(row: BulkQuestionInput): CleanRowResult {
   };
 }
 
-async function insertInChunks(rows: Record<string, unknown>[]) {
+function stripOptionalBulkColumns(row: Record<string, unknown>) {
+  const { topic, source_question_no, ...rest } = row;
+  return rest;
+}
+
+function isMissingOptionalColumnError(error: { message?: string } | null) {
+  const message = String(error?.message || '').toLowerCase();
+  return message.includes('topic') || message.includes('source_question_no') || message.includes('schema cache');
+}
+
+async function fetchExistingKeys(rows: Record<string, unknown>[]) {
+  const stages = Array.from(new Set(rows.map(row => String(row.phase)).filter(Boolean)));
+  const categories = Array.from(new Set(rows.map(row => String(row.category)).filter(Boolean)));
+  const existingKeys = new Set<string>();
+  if (!stages.length || !categories.length) return { existingKeys, error: null as any };
+
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabaseAdmin
+      .from('questions')
+      .select('category,phase,question_text')
+      .in('phase', stages)
+      .in('category', categories)
+      .range(from, from + pageSize - 1);
+
+    if (error) return { existingKeys, error };
+    for (const row of data || []) existingKeys.add(questionKey(row as Record<string, unknown>));
+    if (!data || data.length < pageSize) break;
+  }
+
+  return { existingKeys, error: null as any };
+}
+
+async function insertRows(rows: Record<string, unknown>[]) {
+  const chunkSize = 50;
   let inserted = 0;
-  for (let i = 0; i < rows.length; i += 100) {
-    const chunk = rows.slice(i, i + 100);
-    const { error } = await supabaseAdmin.from('questions').insert(chunk);
-    if (error) return { error, inserted };
+  let usedFallbackWithoutOptionalColumns = false;
+
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const chunk = rows.slice(i, i + chunkSize);
+    let { error } = await supabaseAdmin.from('questions').insert(chunk);
+
+    if (error && isMissingOptionalColumnError(error)) {
+      const fallbackRows = chunk.map(stripOptionalBulkColumns);
+      const fallback = await supabaseAdmin.from('questions').insert(fallbackRows);
+      error = fallback.error;
+      usedFallbackWithoutOptionalColumns = !error;
+    }
+
+    if (error) return { error, inserted, usedFallbackWithoutOptionalColumns };
     inserted += chunk.length;
   }
-  return { error: null, inserted };
+
+  return { error: null, inserted, usedFallbackWithoutOptionalColumns };
 }
 
 export async function POST(request: NextRequest) {
@@ -121,6 +170,8 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => ({}));
   const incoming = Array.isArray(body.questions) ? body.questions : [];
+  const batchNumber = Number(body.batchNumber || 1);
+  const totalBatches = Number(body.totalBatches || 1);
   if (!incoming.length) return jsonError('No questions found to import.');
 
   const cleanedRows: Record<string, unknown>[] = [];
@@ -137,27 +188,59 @@ export async function POST(request: NextRequest) {
   if (errors.length) return jsonError(errors.slice(0, 20).join(' | '), 400);
   if (!cleanedRows.length) return jsonError('No valid questions found.');
 
-  const stages = Array.from(new Set(cleanedRows.map(row => String(row.phase))));
-  const { data: existing, error: existingError } = await supabaseAdmin
-    .from('questions')
-    .select('category,phase,question_text')
-    .in('phase', stages);
+  const seen = new Set<string>();
+  const duplicateInBatch: string[] = [];
+  const uniqueRows = cleanedRows.filter(row => {
+    const key = questionKey(row);
+    if (seen.has(key)) {
+      duplicateInBatch.push(String(row.source_question_no || row.question_text || key));
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+
+  const { existingKeys, error: existingError } = await fetchExistingKeys(uniqueRows);
   if (existingError) return jsonError(existingError.message, 500);
 
-  const existingKeys = new Set((existing || []).map((row: any) => `${row.category}|${row.phase}|${String(row.question_text || '').trim().toLowerCase()}`));
-  const rowsToInsert = cleanedRows.filter(row => !existingKeys.has(`${row.category}|${row.phase}|${String(row.question_text).trim().toLowerCase()}`));
-  const skipped = cleanedRows.length - rowsToInsert.length;
+  const rowsToInsert = uniqueRows.filter(row => !existingKeys.has(questionKey(row)));
+  const skippedExisting = uniqueRows.length - rowsToInsert.length;
+  const skippedInBatch = duplicateInBatch.length;
 
-  if (!rowsToInsert.length) return Response.json({ success: true, inserted: 0, skipped, message: 'All imported questions already exist for the selected stage/category.' });
-
-  const result = await insertInChunks(rowsToInsert);
-  if (result.error) {
-    const message = result.error.message.includes('topic') || result.error.message.includes('source_question_no')
-      ? `${result.error.message}. Run supabase/run-this-bulk-question-upload-fix.sql in Supabase SQL Editor, then try again.`
-      : result.error.message;
-    return jsonError(message, 500);
+  if (!rowsToInsert.length) {
+    return Response.json({
+      success: true,
+      inserted: 0,
+      skipped: skippedExisting + skippedInBatch,
+      skippedExisting,
+      skippedInBatch,
+      batchNumber,
+      totalBatches,
+      message: 'All imported questions in this batch already exist for the selected stage/category.'
+    });
   }
 
-  await supabaseAdmin.from('admin_audit_logs').insert({ action: 'BULK_IMPORT_QUESTIONS', entity_type: 'question', details: { inserted: result.inserted, skipped } }).then(() => null);
-  return Response.json({ success: true, inserted: result.inserted, skipped });
+  const result = await insertRows(rowsToInsert);
+  if (result.error) return jsonError(result.error.message, 500);
+
+  await supabaseAdmin.from('admin_audit_logs').insert({
+    action: 'BULK_IMPORT_QUESTIONS',
+    entity_type: 'question',
+    details: { inserted: result.inserted, skippedExisting, skippedInBatch, batchNumber, totalBatches, usedFallbackWithoutOptionalColumns: result.usedFallbackWithoutOptionalColumns }
+  }).then(() => null);
+
+  const note = result.usedFallbackWithoutOptionalColumns
+    ? ' The import worked, but topic/source question number were skipped because the optional bulk-upload SQL columns are not yet installed.'
+    : '';
+
+  return Response.json({
+    success: true,
+    inserted: result.inserted,
+    skipped: skippedExisting + skippedInBatch,
+    skippedExisting,
+    skippedInBatch,
+    batchNumber,
+    totalBatches,
+    note
+  });
 }
