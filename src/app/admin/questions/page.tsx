@@ -38,6 +38,8 @@ type QuestionForm = {
   isActive: boolean;
 };
 
+type ImageFieldName = 'questionImageUrl' | 'optionAImageUrl' | 'optionBImageUrl' | 'optionCImageUrl' | 'optionDImageUrl';
+
 const CATEGORY_OPTIONS = ['All', ...DEFAULT_CATEGORIES];
 const STAGE_OPTIONS = ['All', ...CONTEST_STAGES];
 const SYMBOLS = [
@@ -126,10 +128,17 @@ function formToPayload(form: QuestionForm) {
 
 function validateForm(form: QuestionForm) {
   if (!form.questionText.trim()) return 'Question text is required.';
-  const options = [form.optionA, form.optionB, form.optionC, form.optionD].map(value => value.trim()).filter(Boolean);
-  if (options.length < 2) return 'At least two answer options are required.';
-  const lower = options.map(value => value.toLowerCase());
-  if (new Set(lower).size !== lower.length) return 'Do not enter the same answer text in more than one option.';
+  const options = [
+    { id: 'A', text: form.optionA, imageUrl: form.optionAImageUrl },
+    { id: 'B', text: form.optionB, imageUrl: form.optionBImageUrl },
+    { id: 'C', text: form.optionC, imageUrl: form.optionCImageUrl },
+    { id: 'D', text: form.optionD, imageUrl: form.optionDImageUrl }
+  ];
+  const availableOptions = options.filter(option => option.text.trim() || option.imageUrl.trim());
+  if (availableOptions.length < 2) return 'At least two answer options are required. You can use text, image, or both.';
+  if (!availableOptions.some(option => option.id === form.correctOptionId)) return 'Correct option must have text or an uploaded image.';
+  const filledTexts = availableOptions.map(option => option.text.trim().toLowerCase()).filter(Boolean);
+  if (new Set(filledTexts).size !== filledTexts.length) return 'Do not enter the same answer text in more than one option.';
   return '';
 }
 
@@ -161,6 +170,7 @@ export default function FilteredQuestionsPage() {
   const [editForm, setEditForm] = useState<QuestionForm>(emptyForm());
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [uploadingField, setUploadingField] = useState<ImageFieldName | null>(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -191,6 +201,34 @@ export default function FilteredQuestionsPage() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function uploadEditorImage(field: ImageFieldName, label: string, file: File | null) {
+    if (!file) return;
+    setUploadingField(field);
+    setError('');
+    setMessage(`Uploading ${label}...`);
+    const form = new FormData();
+    form.append('file', file);
+    form.append('folder', 'question-editor-images');
+
+    const res = await fetch('/api/admin/upload', { method: 'POST', body: form });
+    const json = await res.json().catch(() => ({}));
+    setUploadingField(null);
+
+    if (!res.ok) {
+      setMessage('');
+      setError(json.error || `${label} upload failed.`);
+      return;
+    }
+
+    setEditForm(prev => ({ ...prev, [field]: json.url || '' }));
+    setMessage(`${label} uploaded and attached. Click Save Question Changes to keep it on the question.`);
+  }
+
+  function clearEditorImage(field: ImageFieldName, label: string) {
+    setEditForm(prev => ({ ...prev, [field]: '' }));
+    setMessage(`${label} removed from the edit form. Click Save Question Changes to keep this change.`);
+  }
 
   async function deleteQuestion(id: string) {
     if (!confirm('Delete this question permanently?')) return;
@@ -403,7 +441,7 @@ export default function FilteredQuestionsPage() {
             <div>
               <span className="badge">Edit selected question</span>
               <h2 style={{ marginTop: 10 }}>Update question details</h2>
-              <p className="muted">Click inside any question/option field, place your cursor, then use the symbol buttons to insert symbols exactly there.</p>
+              <p className="muted">Upload images here instead of pasting image URLs. After upload, click Save Question Changes to save the image on the question.</p>
             </div>
             <button className="btn btn-light" onClick={cancelEdit}>Close Editor</button>
           </div>
@@ -419,7 +457,7 @@ export default function FilteredQuestionsPage() {
           </div>
 
           <div className="grid grid-2" style={{ marginTop: 14 }}>
-            <Field label="Question Image URL" value={editForm.questionImageUrl} onChange={questionImageUrl => setEditForm(prev => ({ ...prev, questionImageUrl }))} />
+            <ImageUploadField label="Question Image" value={editForm.questionImageUrl} busy={uploadingField === 'questionImageUrl'} onUpload={file => uploadEditorImage('questionImageUrl', 'Question image', file)} onClear={() => clearEditorImage('questionImageUrl', 'Question image')} />
             <Field label="Points" value={String(editForm.points)} onChange={points => setEditForm(prev => ({ ...prev, points: Number(points || 1) }))} />
           </div>
 
@@ -431,12 +469,13 @@ export default function FilteredQuestionsPage() {
           </div>
 
           <details style={{ marginTop: 14 }}>
-            <summary><strong>Optional image URLs for options</strong></summary>
+            <summary><strong>Optional images for answer options</strong></summary>
+            <p className="small muted">Upload an image for any option that needs a diagram or image answer.</p>
             <div className="grid grid-2" style={{ marginTop: 12 }}>
-              <Field label="Option A Image URL" value={editForm.optionAImageUrl} onChange={optionAImageUrl => setEditForm(prev => ({ ...prev, optionAImageUrl }))} />
-              <Field label="Option B Image URL" value={editForm.optionBImageUrl} onChange={optionBImageUrl => setEditForm(prev => ({ ...prev, optionBImageUrl }))} />
-              <Field label="Option C Image URL" value={editForm.optionCImageUrl} onChange={optionCImageUrl => setEditForm(prev => ({ ...prev, optionCImageUrl }))} />
-              <Field label="Option D Image URL" value={editForm.optionDImageUrl} onChange={optionDImageUrl => setEditForm(prev => ({ ...prev, optionDImageUrl }))} />
+              <ImageUploadField label="Option A Image" value={editForm.optionAImageUrl} busy={uploadingField === 'optionAImageUrl'} onUpload={file => uploadEditorImage('optionAImageUrl', 'Option A image', file)} onClear={() => clearEditorImage('optionAImageUrl', 'Option A image')} />
+              <ImageUploadField label="Option B Image" value={editForm.optionBImageUrl} busy={uploadingField === 'optionBImageUrl'} onUpload={file => uploadEditorImage('optionBImageUrl', 'Option B image', file)} onClear={() => clearEditorImage('optionBImageUrl', 'Option B image')} />
+              <ImageUploadField label="Option C Image" value={editForm.optionCImageUrl} busy={uploadingField === 'optionCImageUrl'} onUpload={file => uploadEditorImage('optionCImageUrl', 'Option C image', file)} onClear={() => clearEditorImage('optionCImageUrl', 'Option C image')} />
+              <ImageUploadField label="Option D Image" value={editForm.optionDImageUrl} busy={uploadingField === 'optionDImageUrl'} onUpload={file => uploadEditorImage('optionDImageUrl', 'Option D image', file)} onClear={() => clearEditorImage('optionDImageUrl', 'Option D image')} />
             </div>
           </details>
 
@@ -446,7 +485,7 @@ export default function FilteredQuestionsPage() {
           </div>
 
           <div className="flex wrap" style={{ marginTop: 18 }}>
-            <button className="btn btn-primary" onClick={saveEdit} disabled={saving}>{saving ? 'Saving...' : 'Save Question Changes'}</button>
+            <button className="btn btn-primary" onClick={saveEdit} disabled={saving || Boolean(uploadingField)}>{saving ? 'Saving...' : 'Save Question Changes'}</button>
             <button className="btn btn-light" onClick={cancelEdit} disabled={saving}>Cancel</button>
           </div>
         </section>}
@@ -518,6 +557,17 @@ function MathField({ label, value, onChange, multiline }: { label: string; value
 
 function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return <label><span className="label">{label}</span><input className="input" value={value} onChange={e => onChange(e.target.value)} autoComplete="off" /></label>;
+}
+
+function ImageUploadField({ label, value, busy, onUpload, onClear }: { label: string; value: string; busy?: boolean; onUpload: (file: File | null) => void; onClear: () => void }) {
+  return <div>
+    <span className="label">{label}</span>
+    <div className="card card-pad" style={{ boxShadow: 'none', padding: 12 }}>
+      {value ? <div className="flex wrap" style={{ marginBottom: 10 }}><a className="btn btn-light" href={value} target="_blank" rel="noreferrer">View current image</a><button type="button" className="btn btn-danger" onClick={onClear} disabled={busy}>Remove image</button></div> : <p className="small muted" style={{ marginTop: 0 }}>No image uploaded yet.</p>}
+      <input type="file" accept="image/*" disabled={busy} onChange={event => onUpload(event.target.files?.[0] || null)} />
+      {busy && <div className="small muted" style={{ marginTop: 8 }}>Uploading...</div>}
+    </div>
+  </div>;
 }
 
 function Metric({ title, value }: { title: string; value: string }) {
