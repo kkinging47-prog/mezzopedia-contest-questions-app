@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { APP_NAME } from '@/lib/constants';
 import AdminQuickLinks from '@/components/AdminQuickLinks';
+import CursorSymbolInsertGuard from '@/components/CursorSymbolInsertGuard';
 import TestSubmitGuard from '@/components/TestSubmitGuard';
 
 export const metadata: Metadata = {
@@ -22,6 +23,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         {children}
         <AdminQuickLinks />
+        <CursorSymbolInsertGuard />
         <TestSubmitGuard />
       </body>
     </html>
