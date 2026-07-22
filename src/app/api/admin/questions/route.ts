@@ -19,18 +19,37 @@ function validateOptions(cleanOptions: Array<{ id: string; text: string; imageUr
   return '';
 }
 
+function escapeLike(value: string) {
+  return value.replace(/[\\%_]/g, match => `\\${match}`);
+}
+
 export async function GET(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) return jsonError('Unauthorized.', 401);
 
   const category = request.nextUrl.searchParams.get('category');
   const phase = request.nextUrl.searchParams.get('phase') || request.nextUrl.searchParams.get('stage');
+  const search = safeText(request.nextUrl.searchParams.get('search') || request.nextUrl.searchParams.get('q'));
   let query = supabaseAdmin.from('questions').select('*').order('created_at', { ascending: false });
   if (category && category !== 'All') query = query.eq('category', category);
   if (phase && phase !== 'All') query = query.eq('phase', phase);
+  if (search) {
+    const term = escapeLike(search);
+    query = query.or(`question_text.ilike.%${term}%,explanation.ilike.%${term}%`);
+  }
   const { data, error } = await query;
   if (error) return jsonError(error.message, 500);
-  return Response.json({ success: true, questions: data || [] });
+
+  const normalizedSearch = search.toLowerCase();
+  const filtered = normalizedSearch
+    ? (data || []).filter((question: any) => {
+      const optionText = Array.isArray(question.options) ? question.options.map((option: any) => `${option?.id || ''} ${option?.text || ''}`).join(' ') : '';
+      return [question.question_text, question.explanation, optionText, question.category, question.phase]
+        .some(value => String(value || '').toLowerCase().includes(normalizedSearch));
+    })
+    : (data || []);
+
+  return Response.json({ success: true, questions: filtered, search });
 }
 
 export async function POST(request: NextRequest) {
