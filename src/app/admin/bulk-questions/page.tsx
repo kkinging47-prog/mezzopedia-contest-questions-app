@@ -56,6 +56,9 @@ const TARGET_LABELS: Record<ImageTarget, string> = {
   optionDImageUrl: 'Option D image'
 };
 
+const IMPORT_BATCH_SIZE = 25;
+const REQUEST_TIMEOUT_MS = 45000;
+
 function keyName(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -75,6 +78,10 @@ function normalizeCategory(value: string) {
 
 function normalizeStage(value: string) {
   return CONTEST_STAGES.find(stage => stage.toLowerCase() === value.toLowerCase()) || 'Stage 1';
+}
+
+function rowKey(row: BulkQuestionRow) {
+  return `${row.category}|${row.stage}|${row.questionText.trim().toLowerCase()}`;
 }
 
 function normalizeRow(row: Record<string, unknown>, index: number): BulkQuestionRow {
@@ -114,6 +121,40 @@ function validateRows(rows: BulkQuestionRow[]) {
   return errors;
 }
 
+function duplicateRows(rows: BulkQuestionRow[]) {
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  for (const row of rows) {
+    const key = rowKey(row);
+    if (seen.has(key)) duplicates.push(row.questionNo || row.questionText.slice(0, 40));
+    seen.add(key);
+  }
+  return duplicates;
+}
+
+function chunkRows(rows: BulkQuestionRow[], size: number) {
+  const chunks: BulkQuestionRow[][] = [];
+  for (let i = 0; i < rows.length; i += size) chunks.push(rows.slice(i, i + size));
+  return chunks;
+}
+
+async function postBatch(batch: BulkQuestionRow[], batchNumber: number, totalBatches: number) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/admin/questions/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ questions: batch, batchNumber, totalBatches }),
+      signal: controller.signal
+    });
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok, json };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export default function BulkQuestionUploadPage() {
   const [ready, setReady] = useState(false);
   const [rows, setRows] = useState<BulkQuestionRow[]>([]);
@@ -121,6 +162,7 @@ export default function BulkQuestionUploadPage() {
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [importProgress, setImportProgress] = useState('');
   const [imageQuestionNo, setImageQuestionNo] = useState('');
   const [imageTarget, setImageTarget] = useState<ImageTarget>('questionImageUrl');
 
@@ -157,7 +199,7 @@ export default function BulkQuestionUploadPage() {
       },
       {
         question_no: '002',
-        stage: 'Stage 1',
+        stage: 'Final Trial',
         category: 'JHS 1',
         topic: 'Geometry',
         question_text: 'Use the diagram to find the missing angle.',
@@ -186,6 +228,7 @@ export default function BulkQuestionUploadPage() {
     if (!file) return;
     setMessage('');
     setError('');
+    setImportProgress('');
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: 'array' });
     const sheetName = workbook.SheetNames[0];
@@ -217,23 +260,54 @@ export default function BulkQuestionUploadPage() {
   async function importQuestions() {
     setError('');
     setMessage('');
+    setImportProgress('Preparing import...');
+
     const errors = validateRows(rows);
-    if (errors.length) { setError(errors.slice(0, 12).join(' | ')); return; }
+    if (errors.length) { setError(errors.slice(0, 12).join(' | ')); setImportProgress(''); return; }
+
+    const duplicateQuestionNumbers = duplicateRows(rows);
+    if (duplicateQuestionNumbers.length) {
+      setError(`Duplicate questions were found inside this Excel file at question number(s): ${duplicateQuestionNumbers.slice(0, 20).join(', ')}. Remove duplicate question text for the same category/stage, then upload again.`);
+      setImportProgress('');
+      return;
+    }
+
+    const batches = chunkRows(rows, IMPORT_BATCH_SIZE);
+    let inserted = 0;
+    let skipped = 0;
+    let note = '';
+
     setSaving(true);
-    const res = await fetch('/api/admin/questions/bulk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ questions: rows })
-    });
-    const json = await res.json().catch(() => ({}));
-    setSaving(false);
-    if (!res.ok) { setError(json.error || 'Could not import questions.'); return; }
-    setMessage(`Import complete. Inserted ${json.inserted || 0}; skipped duplicates ${json.skipped || 0}.`);
+    try {
+      for (let index = 0; index < batches.length; index += 1) {
+        const batchNumber = index + 1;
+        setImportProgress(`Importing batch ${batchNumber} of ${batches.length}... ${inserted} inserted so far.`);
+        const result = await postBatch(batches[index], batchNumber, batches.length);
+        if (!result.ok) {
+          setError(result.json?.error || `Import failed on batch ${batchNumber}.`);
+          setImportProgress(`Stopped at batch ${batchNumber} of ${batches.length}. Inserted ${inserted}; skipped ${skipped}.`);
+          return;
+        }
+        inserted += Number(result.json?.inserted || 0);
+        skipped += Number(result.json?.skipped || 0);
+        if (result.json?.note) note = result.json.note;
+      }
+
+      setMessage(`Import complete. Inserted ${inserted}; skipped duplicates ${skipped}.${note}`);
+      setImportProgress(`Finished ${batches.length} batch(es). You can now check Questions Filter.`);
+    } catch (err: any) {
+      const aborted = err?.name === 'AbortError';
+      setError(aborted ? 'The import request took too long and was stopped before the browser waited forever. Try importing again; the system will skip questions already inserted.' : 'The import failed because the browser lost connection. Try again; already inserted questions will be skipped.');
+      setImportProgress(`Interrupted. Inserted ${inserted}; skipped ${skipped}.`);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function clearRows() {
     setRows([]);
     setImageQuestionNo('');
+    setImportProgress('');
     setMessage('Cleared loaded questions.');
   }
 
@@ -257,10 +331,15 @@ export default function BulkQuestionUploadPage() {
           <p className="muted">Use the template below so the system can read category, stage, topic, question text, options, correct answer and image links accurately.</p>
           {message && <div className="alert alert-success">{message}</div>}
           {error && <div className="alert alert-error">{error}</div>}
+          {importProgress && <div className="alert alert-info">{importProgress}</div>}
 
           <div className="grid grid-2 no-print">
             <button className="btn btn-success" type="button" onClick={downloadTemplate}>Download Excel Template</button>
-            <label><span className="label">Upload completed Excel file</span><input type="file" accept=".xlsx,.xls" onChange={e => parseExcel(e.target.files?.[0] || null)} /></label>
+            <label><span className="label">Upload completed Excel file</span><input type="file" accept=".xlsx,.xls" onChange={e => parseExcel(e.target.files?.[0] || null)} disabled={saving} /></label>
+          </div>
+
+          <div className="alert alert-info" style={{ marginTop: 14 }}>
+            Imports now run in small safe batches of {IMPORT_BATCH_SIZE}. Do not refresh while it is importing. If the internet cuts off, upload the same file again; already imported questions will be skipped.
           </div>
 
           <div className="table-wrap" style={{ marginTop: 18 }}>
@@ -268,7 +347,7 @@ export default function BulkQuestionUploadPage() {
               <thead><tr><th>Column</th><th>Required?</th><th>Example</th><th>Meaning</th></tr></thead>
               <tbody>
                 <FormatRow name="question_no" required="Yes" example="001" meaning="Unique number used to attach uploaded images to the right question." />
-                <FormatRow name="stage" required="Yes" example="Stage 1" meaning="Stage 1, Stage 2 or Stage 3." />
+                <FormatRow name="stage" required="Yes" example="Final Trial / Stage 1" meaning="Final Trial, Stage 1, Stage 2 or Stage 3." />
                 <FormatRow name="category" required="Yes" example="Primary 6" meaning="Must match one of the app categories exactly." />
                 <FormatRow name="topic" required="Recommended" example="Fractions" meaning="The topic/strand for tracking and review." />
                 <FormatRow name="question_text" required="Yes" example="What is 1/2 + 1/4?" meaning="The full question text." />
@@ -290,7 +369,7 @@ export default function BulkQuestionUploadPage() {
           <div className="grid grid-3 no-print">
             <label><span className="label">Question number</span><select className="select" value={imageQuestionNo} onChange={e => setImageQuestionNo(e.target.value)}>{rows.map(row => <option key={row.questionNo} value={row.questionNo}>{row.questionNo}</option>)}</select></label>
             <label><span className="label">Image target</span><select className="select" value={imageTarget} onChange={e => setImageTarget(e.target.value as ImageTarget)}>{Object.entries(TARGET_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-            <label><span className="label">Upload image</span><input type="file" accept="image/*" disabled={uploading} onChange={e => uploadImage(e.target.files?.[0] || null)} /></label>
+            <label><span className="label">Upload image</span><input type="file" accept="image/*" disabled={uploading || saving} onChange={e => uploadImage(e.target.files?.[0] || null)} /></label>
           </div>
         </section>}
 
@@ -299,7 +378,7 @@ export default function BulkQuestionUploadPage() {
         {!!rows.length && <section className="card card-pad" style={{ marginTop: 18 }}>
           <div className="flex between wrap no-print">
             <div><h2>Review loaded questions</h2><p className="muted">Loaded {rows.length} question(s). Confirm before importing.</p></div>
-            <div className="flex wrap"><button className="btn btn-light" onClick={clearRows}>Clear</button><button className="btn btn-primary" onClick={importQuestions} disabled={saving || !!validationErrors.length}>{saving ? 'Importing...' : 'Import Questions'}</button></div>
+            <div className="flex wrap"><button className="btn btn-light" onClick={clearRows} disabled={saving}>Clear</button><button className="btn btn-primary" onClick={importQuestions} disabled={saving || !!validationErrors.length}>{saving ? 'Importing...' : 'Import Questions'}</button></div>
           </div>
           <div className="table-wrap">
             <table>
