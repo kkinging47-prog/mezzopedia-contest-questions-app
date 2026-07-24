@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { NextRequest } from 'next/server';
 import { requireAdmin, hashPassword } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
@@ -7,6 +7,9 @@ import { jsonError, safeText } from '@/lib/utils';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+
+type SyncPaymentStatus = 'paid' | 'pending' | 'unpaid';
+type RegistrationSummary = { total: number; paid: number; pending: number; unpaid: number };
 
 type RegistrationRow = {
   id: string;
@@ -31,6 +34,14 @@ type ContestParticipant = {
   is_active: boolean;
 };
 
+type UnmatchedRegistrant = {
+  name: string;
+  uniqueCode: string;
+  paymentStatus: SyncPaymentStatus;
+  category: string;
+  stage: string;
+};
+
 function cleanEnv(value: string | undefined) {
   return value?.trim().replace(/^['"]|['"]$/g, '');
 }
@@ -49,14 +60,14 @@ function normalizeSupabaseUrl(value: string | undefined) {
   return cleaned.replace(/\/rest\/v1.*$/i, '').replace(/\/+$/, '');
 }
 
-function registrationClient() {
+function registrationClient(): SupabaseClient | null {
   const url = normalizeSupabaseUrl(process.env.REGISTRATION_SUPABASE_URL || process.env.VITE_SUPABASE_URL);
   const key = cleanEnv(process.env.REGISTRATION_SUPABASE_SERVICE_ROLE_KEY || process.env.REGISTRATION_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY);
   if (!url || !key) return null;
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
-function paymentStatus(value: unknown) {
+function paymentStatus(value: unknown): SyncPaymentStatus {
   const raw = safeText(value || 'unpaid').toLowerCase();
   if (['paid', 'pay', 'complete', 'completed', 'yes', 'true', '1'].includes(raw)) return 'paid';
   if (['pending', 'processing', 'waiting'].includes(raw)) return 'pending';
@@ -67,7 +78,7 @@ function codeKey(value: unknown) {
   return safeText(value).toLowerCase();
 }
 
-async function listRegistrationRows(client: ReturnType<typeof createClient>) {
+async function listRegistrationRows(client: SupabaseClient) {
   const rows: RegistrationRow[] = [];
   const pageSize = 1000;
   for (let from = 0; ; from += pageSize) {
@@ -91,13 +102,14 @@ async function listContestParticipants() {
   return { participants: (data || []) as ContestParticipant[], error };
 }
 
-function summarizeRegistrationRows(rows: RegistrationRow[]) {
-  return rows.reduce((summary, row) => {
+function summarizeRegistrationRows(rows: RegistrationRow[]): RegistrationSummary {
+  const summary: RegistrationSummary = { total: 0, paid: 0, pending: 0, unpaid: 0 };
+  for (const row of rows) {
     const status = paymentStatus(row.payment_status);
     summary.total += 1;
     summary[status] += 1;
-    return summary;
-  }, { total: 0, paid: 0, pending: 0, unpaid: 0 });
+  }
+  return summary;
 }
 
 function buildParticipantMap(participants: ContestParticipant[]) {
@@ -110,13 +122,23 @@ function buildParticipantMap(participants: ContestParticipant[]) {
   return map;
 }
 
+function unmatchedRegistrant(registrant: RegistrationRow): UnmatchedRegistrant {
+  return {
+    name: registrant.full_name || '',
+    uniqueCode: registrant.unique_code || '',
+    paymentStatus: paymentStatus(registrant.payment_status),
+    category: registrant.category || '',
+    stage: registrant.stage || ''
+  };
+}
+
 function basicPreview(registrants: RegistrationRow[], participants: ContestParticipant[]) {
   const participantMap = buildParticipantMap(participants);
   let matched = 0;
   let statusChanges = 0;
   let nameChanges = 0;
   let duplicateContestCodes = 0;
-  const unmatched: Array<{ name: string; uniqueCode: string; paymentStatus: string; category: string; stage: string }> = [];
+  const unmatched: UnmatchedRegistrant[] = [];
 
   for (const registrant of registrants) {
     const key = codeKey(registrant.unique_code);
@@ -124,13 +146,7 @@ function basicPreview(registrants: RegistrationRow[], participants: ContestParti
     const matches = participantMap.get(key) || [];
     if (matches.length > 1) { duplicateContestCodes += 1; continue; }
     if (!matches.length) {
-      unmatched.push({
-        name: registrant.full_name || '',
-        uniqueCode: registrant.unique_code || '',
-        paymentStatus: paymentStatus(registrant.payment_status),
-        category: registrant.category || '',
-        stage: registrant.stage || ''
-      });
+      unmatched.push(unmatchedRegistrant(registrant));
       continue;
     }
     matched += 1;
@@ -194,7 +210,7 @@ export async function POST(request: NextRequest) {
   let passwordUpdated = 0;
   let skippedUnmatched = 0;
   let skippedDuplicateContestCodes = 0;
-  const unmatched: Array<{ name: string; uniqueCode: string; paymentStatus: string; category: string; stage: string }> = [];
+  const unmatched: UnmatchedRegistrant[] = [];
 
   for (const registrant of registration.rows) {
     const key = codeKey(registrant.unique_code);
@@ -204,13 +220,7 @@ export async function POST(request: NextRequest) {
     if (matches.length > 1) { skippedDuplicateContestCodes += 1; continue; }
     if (!matches.length) {
       skippedUnmatched += 1;
-      if (unmatched.length < 100) unmatched.push({
-        name: registrant.full_name || '',
-        uniqueCode: registrant.unique_code || '',
-        paymentStatus: paymentStatus(registrant.payment_status),
-        category: registrant.category || '',
-        stage: registrant.stage || ''
-      });
+      if (unmatched.length < 100) unmatched.push(unmatchedRegistrant(registrant));
       continue;
     }
 
