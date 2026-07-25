@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('participant_login_events')
-    .select('id,event_type,created_at,usercode,category,contest_stage,user_agent,details, participant:participants(id,name), session:contest_sessions(id,status)')
+    .select('id,event_type,created_at,usercode,category,contest_stage,user_agent,ip_address,details, participant:participants(id,name), session:contest_sessions(id,status)')
     .order('created_at', { ascending: false })
     .limit(1000);
 
@@ -53,6 +53,7 @@ export async function GET(request: NextRequest) {
       contestStage: row.contest_stage || '',
       sessionStatus: row.session?.status || '',
       userAgent,
+      ipAddress: row.ip_address || '',
       deviceType: detectDevice(userAgent),
       browserName: detectBrowser(userAgent),
       osName: detectOS(userAgent),
