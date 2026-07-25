@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAdmin, hashPassword } from '@/lib/auth';
+import { DEFAULT_CATEGORIES } from '@/lib/constants';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage, safeText } from '@/lib/utils';
 
@@ -8,6 +9,15 @@ function normalizePaymentStatus(value: unknown) {
   if (raw === 'paid') return 'paid';
   if (raw === 'pending') return 'pending';
   return 'unpaid';
+}
+
+function normalizeCategory(value: unknown) {
+  const raw = safeText(value);
+  if (!raw) return '';
+  const exact = DEFAULT_CATEGORIES.find(category => category.toLowerCase() === raw.toLowerCase());
+  if (exact) return exact;
+  if (raw.toLowerCase() === 'adult' || raw.toLowerCase() === 'adults') return 'Adults';
+  return '';
 }
 
 export async function PUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
@@ -36,7 +46,11 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
   }
 
   const payload: Record<string, any> = { updated_at: new Date().toISOString() };
-  if ('category' in body) payload.category = safeText(body.category);
+  if ('category' in body) {
+    const category = normalizeCategory(body.category);
+    if (!category) return jsonError(`Choose a valid contest category: ${DEFAULT_CATEGORIES.join(', ')}. Do not use the broad category student.`, 400);
+    payload.category = category;
+  }
   if ('name' in body) payload.name = safeText(body.name);
   if ('usercode' in body) payload.usercode = newUsercode;
   if ('paymentStatus' in body || 'payment_status' in body) payload.payment_status = normalizePaymentStatus(body.paymentStatus || body.payment_status);
