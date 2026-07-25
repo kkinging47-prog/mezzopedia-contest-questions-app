@@ -3,6 +3,76 @@ import { requireAdmin } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage, percentage } from '@/lib/utils';
 
+type RankedResult = {
+  id: string;
+  participantId: string;
+  category: string;
+  sessionStage: string;
+  currentStage: string;
+  status: string;
+  name: string;
+  usercode: string;
+  paymentStatus: string;
+  isActive: boolean;
+  score: number;
+  maxScore: number;
+  totalQuestions: number;
+  percentage: number;
+  timeUsedSeconds: number;
+  startedAt: string;
+  submittedAt: string;
+  proctoringSummary: Record<string, unknown>;
+  attemptCount?: number;
+  hiddenAttemptCount?: number;
+};
+
+function submittedTime(value?: string) {
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function officialAttemptCompare(a: RankedResult, b: RankedResult) {
+  const aSubmitted = submittedTime(a.submittedAt) > 0;
+  const bSubmitted = submittedTime(b.submittedAt) > 0;
+  if (aSubmitted !== bSubmitted) return aSubmitted ? -1 : 1;
+
+  const scoreDiff = b.score - a.score;
+  if (scoreDiff) return scoreDiff;
+
+  const timeDiff = a.timeUsedSeconds - b.timeUsedSeconds;
+  if (timeDiff) return timeDiff;
+
+  const aCompleted = a.status === 'completed';
+  const bCompleted = b.status === 'completed';
+  if (aCompleted !== bCompleted) return aCompleted ? -1 : 1;
+
+  return submittedTime(b.submittedAt) - submittedTime(a.submittedAt);
+}
+
+function rankingCompare(a: RankedResult, b: RankedResult) {
+  return b.score - a.score || a.timeUsedSeconds - b.timeUsedSeconds || submittedTime(a.submittedAt) - submittedTime(b.submittedAt) || a.name.localeCompare(b.name);
+}
+
+function officialResultsOnly(results: RankedResult[]) {
+  const groups = new Map<string, RankedResult[]>();
+  for (const result of results) {
+    const key = `${result.participantId || result.usercode}|${result.sessionStage}`;
+    groups.set(key, [...(groups.get(key) || []), result]);
+  }
+
+  const official: RankedResult[] = [];
+  let duplicateAttemptCount = 0;
+  for (const attempts of groups.values()) {
+    const sorted = attempts.sort(officialAttemptCompare);
+    const best = sorted[0];
+    const attemptCount = attempts.length;
+    duplicateAttemptCount += Math.max(0, attemptCount - 1);
+    official.push({ ...best, attemptCount, hiddenAttemptCount: Math.max(0, attemptCount - 1) });
+  }
+
+  return { official: official.sort(rankingCompare), duplicateAttemptCount };
+}
+
 export async function GET(request: NextRequest) {
   const admin = await requireAdmin(request);
   if (!admin) return jsonError('Unauthorized.', 401);
@@ -17,7 +87,7 @@ export async function GET(request: NextRequest) {
 
   if (error) return jsonError(error.message, 500);
 
-  const results = (data || [])
+  const allResults: RankedResult[] = (data || [])
     .map((row: any) => ({
       id: row.id,
       participantId: row.participant_id || row.participant?.id || '',
@@ -37,8 +107,16 @@ export async function GET(request: NextRequest) {
       startedAt: row.started_at,
       submittedAt: row.submitted_at,
       proctoringSummary: row.proctoring_summary || {}
-    }))
-    .sort((a, b) => b.score - a.score || a.timeUsedSeconds - b.timeUsedSeconds || a.name.localeCompare(b.name));
+    }));
 
-  return Response.json({ success: true, results, defaultOrder: 'highest_score_then_least_time' });
+  const { official, duplicateAttemptCount } = officialResultsOnly(allResults);
+
+  return Response.json({
+    success: true,
+    results: official,
+    allSessionCount: allResults.length,
+    duplicateAttemptCount,
+    defaultOrder: 'highest_score_then_least_time',
+    dedupeRule: 'One official row is shown per participant per completed stage. Extra saved attempts are counted but hidden from ranking.'
+  });
 }
