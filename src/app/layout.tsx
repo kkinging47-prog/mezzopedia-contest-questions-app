@@ -4,6 +4,7 @@ import { APP_NAME } from '@/lib/constants';
 import AdminQuickLinks from '@/components/AdminQuickLinks';
 import CursorSymbolInsertGuard from '@/components/CursorSymbolInsertGuard';
 import TestSubmitGuard from '@/components/TestSubmitGuard';
+import MobileProctoringStartGuard from '@/components/MobileProctoringStartGuard';
 
 export const metadata: Metadata = {
   title: APP_NAME,
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AdminQuickLinks />
         <CursorSymbolInsertGuard />
         <TestSubmitGuard />
+        <MobileProctoringStartGuard />
       </body>
     </html>
   );
