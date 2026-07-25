@@ -33,6 +33,10 @@ function isPaidStatus(value: unknown) {
   return String(value || '').trim().toLowerCase() === 'paid';
 }
 
+function getRequestIp(request: Request) {
+  return (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || request.headers.get('x-real-ip') || '';
+}
+
 async function findParticipantByCodeAndPassword(usercode: string, password: string, category?: string) {
   let query = supabaseAdmin.from('participants').select('*').ilike('usercode', usercode);
   if (category) query = query.eq('category', category);
@@ -93,6 +97,7 @@ export async function POST(request: Request) {
   const submittedCategory = normalizeCategory(String(body.category || ''));
   const enteredName = String(body.name || '').trim();
   const userAgent = request.headers.get('user-agent') || '';
+  const ipAddress = getRequestIp(request);
 
   if (!usercode || !password) return jsonError('Enter your user code and password.');
 
@@ -115,6 +120,7 @@ export async function POST(request: Request) {
       contest_stage: stage,
       event_type: 'LOGIN_BLOCKED_PAYMENT_NOT_CONFIRMED',
       user_agent: userAgent,
+      ip_address: ipAddress,
       details: { paymentStatus: participant.payment_status || 'unpaid', message: 'Payment must be confirmed before the main contest stages.' }
     }).then(() => null);
     return jsonError(`Your payment status is ${participant.payment_status || 'unpaid'}. You can use the Final Trial, but the main contest stages require confirmed payment.`, 403);
@@ -137,6 +143,7 @@ export async function POST(request: Request) {
       contest_stage: stage,
       event_type: stageAccess.reason === 'not_started' ? 'LOGIN_BLOCKED_STAGE_NOT_STARTED' : stageAccess.reason === 'ended' ? 'LOGIN_BLOCKED_STAGE_ENDED' : 'LOGIN_BLOCKED_STAGE_CLOSED',
       user_agent: userAgent,
+      ip_address: ipAddress,
       details: { message: stageAccess.message, reason: stageAccess.reason }
     }).then(() => null);
     return jsonError(stageAccess.message, 403);
@@ -220,10 +227,10 @@ export async function POST(request: Request) {
   await supabaseAdmin.from('participants').update({ last_login_at: now.toISOString(), login_count: previousLogins + 1 }).eq('id', participant.id);
   await supabaseAdmin.from('contest_sessions').update({ active_login_token: loginToken, active_user_agent: userAgent, last_reauth_at: now.toISOString(), answers: resumedAnswers, updated_at: now.toISOString() }).eq('id', session.id);
 
-  await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, resumedExistingSession: loginType === 'LOGIN_RESUME_EXISTING_SESSION', questionCount: session.total_questions, paymentStatus: participant.payment_status || 'unpaid' } }).then(() => null);
+  await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, ip_address: ipAddress, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, resumedExistingSession: loginType === 'LOGIN_RESUME_EXISTING_SESSION', questionCount: session.total_questions, paymentStatus: participant.payment_status || 'unpaid', ipAddress } }).then(() => null);
 
   if (previousLogins > 0) {
-    await supabaseAdmin.from('proctoring_events').insert({ session_id: session.id, participant_id: participant.id, event_type: 'MULTIPLE_OR_REPEAT_USERCODE_LOGIN', severity: 'high', details: { previousLogins, message: 'The same usercode logged in again. Older browser sessions were invalidated, but the latest login resumes the existing session.' }, user_agent: userAgent }).then(() => null);
+    await supabaseAdmin.from('proctoring_events').insert({ session_id: session.id, participant_id: participant.id, event_type: 'MULTIPLE_OR_REPEAT_USERCODE_LOGIN', severity: 'high', details: { previousLogins, ipAddress, message: 'The same usercode logged in again. Older browser sessions were invalidated, but the latest login resumes the existing session.' }, user_agent: userAgent, ip_address: ipAddress }).then(() => null);
   }
 
   const token = await signToken({ type: 'participant', sessionId: session.id, participantId: participant.id, loginToken }, TEST_DURATION_MINUTES * 60 + 60 * 24);
