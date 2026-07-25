@@ -10,10 +10,28 @@ type ResumeMeta = {
   currentQuestionIndex?: number;
 };
 
+function numericSeconds(value: unknown) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.floor(numeric) : null;
+}
+
+function timestampMs(value: unknown) {
+  if (!value) return 0;
+  const parsed = new Date(String(value)).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function elapsedBetweenSeconds(start: unknown, end: unknown) {
+  const startMs = timestampMs(start);
+  const endMs = timestampMs(end);
+  if (!startMs || !endMs || endMs < startMs) return 0;
+  return Math.floor((endMs - startMs) / 1000);
+}
+
 export function clampSessionSeconds(value: unknown) {
-  const numeric = Number(value || 0);
-  if (!Number.isFinite(numeric)) return 0;
-  return Math.min(TEST_DURATION_SECONDS, Math.max(0, Math.floor(numeric)));
+  const numeric = numericSeconds(value);
+  if (numeric === null) return 0;
+  return Math.min(TEST_DURATION_SECONDS, Math.max(0, numeric));
 }
 
 export function getAnswers(sessionOrAnswers: any) {
@@ -39,11 +57,25 @@ export function currentQuestionIndexFrom(sessionOrAnswers: any) {
 
 export function activeElapsedSeconds(session: any, now = new Date()) {
   const meta = getResumeMeta(session);
-  const accumulated = clampSessionSeconds(meta.accumulatedTimeSeconds || session?.time_used_seconds || 0);
-  const activeStartedAt = meta.activeStartedAt ? new Date(meta.activeStartedAt).getTime() : 0;
-  if (!activeStartedAt || Number.isNaN(activeStartedAt)) return accumulated;
-  const activeSeconds = Math.max(0, Math.floor((now.getTime() - activeStartedAt) / 1000));
-  return clampSessionSeconds(accumulated + activeSeconds);
+  const metaAccumulated = numericSeconds(meta.accumulatedTimeSeconds);
+  const storedTime = numericSeconds(session?.time_used_seconds);
+  const accumulated = clampSessionSeconds(metaAccumulated ?? storedTime ?? 0);
+
+  // Normal live-session path: add time since the latest active browser start/checkpoint.
+  const activeStartedAt = timestampMs(meta.activeStartedAt);
+  if (activeStartedAt) {
+    const activeSeconds = Math.max(0, Math.floor((now.getTime() - activeStartedAt) / 1000));
+    return clampSessionSeconds(accumulated + activeSeconds);
+  }
+
+  // Fallback for older sessions or rare cases where resume metadata is missing.
+  // This prevents valid submissions from showing 0m 0s simply because the hidden
+  // resume metadata was not saved before submission.
+  const endTime = session?.submitted_at || session?.updated_at || now.toISOString();
+  const elapsedFromStart = elapsedBetweenSeconds(session?.started_at, endTime);
+
+  if (elapsedFromStart > 0) return clampSessionSeconds(Math.max(accumulated, elapsedFromStart));
+  return accumulated;
 }
 
 export function remainingSessionSeconds(session: any, now = new Date()) {
