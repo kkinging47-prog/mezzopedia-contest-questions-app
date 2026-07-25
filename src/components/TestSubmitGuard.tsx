@@ -7,6 +7,8 @@ type AnalysisResult = {
   unansweredNumbers: number[];
   unansweredButtons: HTMLButtonElement[];
   total: number;
+  answered: number;
+  allAnsweredByCounter: boolean;
 };
 
 function questionButtons() {
@@ -40,19 +42,46 @@ function isAnswered(button: HTMLButtonElement) {
   return looksAnswered || button.dataset.answerState === 'answered';
 }
 
+function isUnansweredWarning(node: HTMLElement) {
+  return /unanswered\s+question/i.test(node.textContent || '');
+}
+
+function clearStaleUnansweredWarnings() {
+  document.querySelector('[data-unanswered-guard="true"]')?.remove();
+  questionButtons().forEach(button => {
+    button.classList.remove('unanswered-guard-mark');
+    button.removeAttribute('title');
+  });
+
+  // Some phones can keep the old red React/browser warning visible even after the
+  // answer counter has correctly moved to 10/10. Hide only that stale unanswered
+  // warning; leave other errors such as network errors visible.
+  Array.from(document.querySelectorAll<HTMLElement>('.alert-error, .unanswered-guard-panel')).forEach(node => {
+    if (isUnansweredWarning(node)) node.style.display = 'none';
+  });
+}
+
+function restoreUnansweredWarningVisibility() {
+  Array.from(document.querySelectorAll<HTMLElement>('.alert-error, .unanswered-guard-panel')).forEach(node => {
+    if (isUnansweredWarning(node)) node.style.display = '';
+  });
+}
+
 function analyze(): AnalysisResult {
   const buttons = questionButtons();
   const counter = answeredCounter();
 
-  // The React test page is the source of truth. If it says all questions are answered,
-  // do not let this DOM helper block submission because of stale/computed styles.
+  // The React test counter is the source of truth. If it says all questions are
+  // answered, do not let this DOM helper show/block with a stale unanswered count.
   if (counter && counter.total > 0 && counter.answered >= counter.total) {
-    return { unansweredNumbers: [], unansweredButtons: [], total: counter.total };
+    clearStaleUnansweredWarnings();
+    return { unansweredNumbers: [], unansweredButtons: [], total: counter.total, answered: counter.answered, allAnsweredByCounter: true };
   }
 
+  restoreUnansweredWarningVisibility();
   const unansweredButtons = buttons.filter(button => !isAnswered(button));
   const unansweredNumbers = unansweredButtons.map(button => Number((button.textContent || '').trim())).filter(Boolean);
-  return { unansweredNumbers, unansweredButtons, total: buttons.length };
+  return { unansweredNumbers, unansweredButtons, total: counter?.total || buttons.length, answered: counter?.answered || Math.max(0, buttons.length - unansweredButtons.length), allAnsweredByCounter: false };
 }
 
 function ensureStyle() {
@@ -122,14 +151,15 @@ function promptContainer() {
 
 function renderPrompt(result: AnalysisResult, shouldScroll = false) {
   const existing = document.querySelector<HTMLElement>('[data-unanswered-guard="true"]');
-  if (!result.unansweredNumbers.length) {
+  if (!result.unansweredNumbers.length || result.allAnsweredByCounter) {
     existing?.remove();
-    markUnanswered(result);
+    clearStaleUnansweredWarnings();
     return;
   }
 
   const panel = promptContainer();
   if (!panel) return;
+  panel.style.display = '';
   const preview = result.unansweredNumbers.slice(0, 30);
   const extra = result.unansweredNumbers.length > preview.length ? ` and ${result.unansweredNumbers.length - preview.length} more` : '';
   panel.innerHTML = `
@@ -158,6 +188,11 @@ export default function TestSubmitGuard() {
     const refresh = () => window.setTimeout(() => {
       const existingPrompt = document.querySelector('[data-unanswered-guard="true"]');
       const result = analyze();
+      document.body.dataset.testAnswered = `${result.answered}/${result.total}`;
+      if (result.allAnsweredByCounter) {
+        clearStaleUnansweredWarnings();
+        return;
+      }
       if (existingPrompt || result.unansweredNumbers.length === 0) renderPrompt(result, false);
       else markUnanswered(result);
     }, 120);
@@ -168,6 +203,10 @@ export default function TestSubmitGuard() {
       const label = (button.textContent || '').trim().toLowerCase();
       if (label.includes('submit test')) {
         const result = analyze();
+        if (result.allAnsweredByCounter) {
+          clearStaleUnansweredWarnings();
+          return;
+        }
         if (result.unansweredNumbers.length) {
           event.preventDefault();
           event.stopPropagation();
@@ -190,6 +229,7 @@ export default function TestSubmitGuard() {
       observer.disconnect();
       questionButtons().forEach(button => button.classList.remove('unanswered-guard-mark'));
       document.querySelector('[data-unanswered-guard="true"]')?.remove();
+      delete document.body.dataset.testAnswered;
     };
   }, [pathname]);
 
