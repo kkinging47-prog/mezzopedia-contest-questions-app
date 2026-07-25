@@ -1,5 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAdmin, hashPassword } from '@/lib/auth';
+import { DEFAULT_CATEGORIES } from '@/lib/constants';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage, safeText } from '@/lib/utils';
 
@@ -39,6 +40,15 @@ function normalizePaymentStatus(value: unknown) {
   return 'unpaid';
 }
 
+function normalizeCategory(value: unknown) {
+  const raw = safeText(value);
+  if (!raw) return '';
+  const exact = DEFAULT_CATEGORIES.find(category => category.toLowerCase() === raw.toLowerCase());
+  if (exact) return exact;
+  if (raw.toLowerCase() === 'adult' || raw.toLowerCase() === 'adults') return 'Adults';
+  return '';
+}
+
 function codeKey(value: unknown) {
   return safeText(value).toLowerCase();
 }
@@ -64,7 +74,7 @@ function isStageOpen(stageSettings: StageSettings, stage: string) {
 }
 
 function cleanParticipantInput(item: ParticipantInput, stageSettings: StageSettings) {
-  const category = safeText(item.category);
+  const category = normalizeCategory(item.category);
   const name = safeText(item.name);
   const usercode = safeText(item.usercode);
   const password = safeText(item.password);
@@ -110,8 +120,9 @@ function duplicatePayload(rows: any[]) {
 
 async function importParticipants(items: ParticipantInput[], stageSettings: StageSettings, importMode: string) {
   const cleaned = items.map(item => cleanParticipantInput(item, stageSettings)).filter(Boolean) as CleanParticipant[];
-  if (!cleaned.length) return { error: 'No valid participants found. Check category, name, usercode and password.' };
+  if (!cleaned.length) return { error: `No valid participants found. Use an exact contest category: ${DEFAULT_CATEGORIES.join(', ')}. Do not use the broad registration category student.` };
 
+  const invalidCategoryCount = items.filter(item => safeText(item.category) && !normalizeCategory(item.category)).length;
   const seen = new Set<string>();
   const duplicateRowsInFile: string[] = [];
   for (const row of cleaned) {
@@ -164,7 +175,7 @@ async function importParticipants(items: ParticipantInput[], stageSettings: Stag
     inserted += 1;
   }
 
-  return { imported: inserted + updated, inserted, updated, skippedExisting, skippedDuplicates };
+  return { imported: inserted + updated, inserted, updated, skippedExisting, skippedDuplicates, invalidCategoryCount };
 }
 
 export async function GET(request: NextRequest) {
@@ -200,7 +211,7 @@ export async function POST(request: NextRequest) {
     }
 
     const clean = cleanParticipantInput(body as ParticipantInput, stageSettings);
-    if (!clean) return jsonError('Category, name, usercode and password are required.');
+    if (!clean) return jsonError(`Category, name, usercode and password are required. Category must be one of: ${DEFAULT_CATEGORIES.join(', ')}.`);
 
     const existing = await findExistingByUsercode(clean.usercode);
     if (existing.error) return jsonError(existing.error.message, 500);
