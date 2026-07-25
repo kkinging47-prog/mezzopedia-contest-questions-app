@@ -42,6 +42,23 @@ export default function PerformancePage() {
     setSettings(prev => ({ ...prev, [key]: value }));
   }
 
+  function applyClearEvidencePreset() {
+    setSettings({
+      contestLoadMode: true,
+      answerSaveDelayMs: 2000,
+      snapshotMs: 60000,
+      cameraCheckMs: 20000,
+      audioCheckMs: 6000,
+      panelCheckMs: 15000,
+      cooldownMs: 45000,
+      imageQuality: 0.62,
+      maxImageWidth: 900,
+      audioClipMs: 2500,
+      requireDesktopScreen: true,
+      reducedMobileMode: true
+    });
+  }
+
   function applySafe400Preset() {
     setSettings({
       contestLoadMode: true,
@@ -51,8 +68,8 @@ export default function PerformancePage() {
       audioCheckMs: 3500,
       panelCheckMs: 10000,
       cooldownMs: 30000,
-      imageQuality: 0.45,
-      maxImageWidth: 540,
+      imageQuality: 0.52,
+      maxImageWidth: 720,
       audioClipMs: 3000,
       requireDesktopScreen: true,
       reducedMobileMode: true
@@ -68,8 +85,8 @@ export default function PerformancePage() {
       audioCheckMs: 6000,
       panelCheckMs: 15000,
       cooldownMs: 60000,
-      imageQuality: 0.35,
-      maxImageWidth: 420,
+      imageQuality: 0.45,
+      maxImageWidth: 640,
       audioClipMs: 2500,
       requireDesktopScreen: true,
       reducedMobileMode: true
@@ -87,7 +104,7 @@ export default function PerformancePage() {
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) { setError(json.error || 'Could not save settings.'); return; }
-    setMessage('Performance settings saved. Vercel does not need a redeploy for these settings. New test pages will use them automatically.');
+    setMessage('Performance settings saved. Vercel does not need a redeploy for these settings. New test pages will use them automatically. Already saved evidence images will remain in their old quality.');
   }
 
   if (error && !ready) return <main className="math-bg centered"><div className="card card-pad"><div className="alert alert-error">{error}</div><a className="btn btn-primary" href="/admin">Back to Admin</a></div></main>;
@@ -102,10 +119,12 @@ export default function PerformancePage() {
         <div className="card card-pad">
           <span className="badge">400-user readiness</span>
           <h1 style={{ marginTop: 12 }}>Performance controls</h1>
-          <p className="muted">Use these settings before a live contest day. For 400 simultaneous candidates, keep answer saving batched and avoid very frequent image/audio uploads.</p>
+          <p className="muted">Use these settings before a live contest day. The clearer evidence preset improves screenshot readability. For very heavy traffic, use the safe 400-user preset to balance clarity and speed.</p>
           {message && <div className="alert alert-success">{message}</div>}
           {error && <div className="alert alert-error">{error}</div>}
+          <div className="alert alert-info">For more readable proctoring evidence, use <strong>Clearer Evidence Preset</strong>, then click <strong>Save Performance Settings</strong>. New candidate sessions will use the improved quality.</div>
           <div className="flex wrap" style={{ marginBottom: 18 }}>
+            <button className="btn btn-success" type="button" onClick={applyClearEvidencePreset}>Use Clearer Evidence Preset</button>
             <button className="btn btn-primary" type="button" onClick={applySafe400Preset}>Use Safe 400-user Preset</button>
             <button className="btn btn-light" type="button" onClick={applyLightPreset}>Use Lighter Mobile Preset</button>
           </div>
