@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage, percentage } from '@/lib/utils';
+import { activeElapsedSeconds } from '@/lib/sessionTime';
 
 type RankedResult = {
   id: string;
@@ -79,7 +80,7 @@ export async function GET(request: NextRequest) {
 
   const { data, error } = await supabaseAdmin
     .from('contest_sessions')
-    .select('id,participant_id,category,contest_stage,status,started_at,submitted_at,time_used_seconds,score,max_score,total_questions,proctoring_summary, participant:participants(id,name,usercode,category,payment_status,contest_stage,is_active)')
+    .select('id,participant_id,category,contest_stage,status,started_at,submitted_at,updated_at,time_used_seconds,score,max_score,total_questions,proctoring_summary, participant:participants(id,name,usercode,category,payment_status,contest_stage,is_active)')
     .in('status', ['completed', 'expired'])
     .order('score', { ascending: false, nullsFirst: false })
     .order('time_used_seconds', { ascending: true, nullsFirst: false })
@@ -103,7 +104,7 @@ export async function GET(request: NextRequest) {
       maxScore: row.max_score || row.total_questions || 0,
       totalQuestions: row.total_questions || 0,
       percentage: percentage(row.score || 0, row.max_score || row.total_questions || 0),
-      timeUsedSeconds: row.time_used_seconds || 0,
+      timeUsedSeconds: activeElapsedSeconds(row, row.submitted_at ? new Date(row.submitted_at) : new Date()),
       startedAt: row.started_at,
       submittedAt: row.submitted_at,
       proctoringSummary: row.proctoring_summary || {}
