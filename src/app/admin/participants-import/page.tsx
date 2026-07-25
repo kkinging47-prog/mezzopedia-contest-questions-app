@@ -40,7 +40,13 @@ function normalizeStage(value: string) {
 
 function normalizeCategory(value: string) {
   const raw = value.trim().toLowerCase();
-  return DEFAULT_CATEGORIES.find(category => category.toLowerCase() === raw) || value.trim();
+  if (!raw) return '';
+  const exact = DEFAULT_CATEGORIES.find(category => category.toLowerCase() === raw);
+  if (exact) return exact;
+  if (raw === 'adult' || raw === 'adults') return 'Adults';
+  // Do not accept the broad registration-app category "student" here.
+  // The contest app needs the exact class/category, such as Primary 6 or JHS 1.
+  return '';
 }
 
 function fileSafe(value: string) {
@@ -77,7 +83,7 @@ export default function ParticipantsImportPage() {
     const sheet = workbook.Sheets[sheetName];
     const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' });
     const parsed = rawRows.map(row => ({
-      category: normalizeCategory(get(row, ['category', 'class', 'class category', 'level'])),
+      category: normalizeCategory(get(row, ['category', 'class', 'class category', 'contest category', 'level'])),
       name: get(row, ['name', 'student name', 'participant name', 'candidate name', 'full name']),
       usercode: get(row, ['usercode', 'user code', 'code', 'registration code', 'unique code']),
       password: get(row, ['password', 'passcode', 'pin']),
@@ -102,7 +108,8 @@ export default function ParticipantsImportPage() {
       setRows(parsed);
       const existingCount = parsed.filter(row => existingCodes.has(codeKey(row.usercode))).length;
       const duplicateInFileCount = duplicateCodes(parsed).length;
-      setMessage(`Loaded ${parsed.length} row(s) from ${file.name}. ${existingCount} row(s) match existing codes. ${duplicateInFileCount} duplicate code(s) found inside this file.`);
+      const invalidCategoryCount = parsed.filter(row => row.usercode && !row.category).length;
+      setMessage(`Loaded ${parsed.length} row(s) from ${file.name}. ${existingCount} row(s) match existing codes. ${duplicateInFileCount} duplicate code(s) found inside this file. ${invalidCategoryCount} row(s) have invalid/missing contest category.`);
     } catch {
       setError('Could not read the Excel/CSV file. Use .xlsx, .xls or .csv with headings.');
     }
@@ -135,9 +142,9 @@ export default function ParticipantsImportPage() {
 
   async function importRows() {
     const validRows = rows.filter(row => row.category && row.name && row.usercode && row.password);
-    if (!validRows.length) { setError('No valid rows found. Each row needs category, name, usercode and password.'); return; }
+    if (!validRows.length) { setError('No valid rows found. Each row needs exact contest category, name, usercode and password. Do not use the broad category "student".'); return; }
     const invalidCount = rows.length - validRows.length;
-    if (invalidCount > 0 && !confirm(`${invalidCount} row(s) are missing required fields and will be skipped. Continue?`)) return;
+    if (invalidCount > 0 && !confirm(`${invalidCount} row(s) are missing required fields or exact contest category and will be skipped. Continue?`)) return;
 
     const duplicatesInsideFile = duplicateCodes(validRows);
     if (duplicatesInsideFile.length) {
@@ -175,6 +182,7 @@ export default function ParticipantsImportPage() {
 
   const existingCount = rows.filter(row => existingCodes.has(codeKey(row.usercode))).length;
   const validCount = rows.filter(row => row.category && row.name && row.usercode && row.password).length;
+  const invalidCategoryCount = rows.filter(row => row.usercode && !row.category).length;
 
   return (
     <main className="math-bg" style={{ paddingBottom: 40 }}>
@@ -184,6 +192,7 @@ export default function ParticipantsImportPage() {
           <div className="flex wrap">
             <a className="btn btn-light" href="/admin">Back to Admin</a>
             <a className="btn btn-primary" href="/admin/participants">Participant Manager</a>
+            <a className="btn btn-primary" href="/admin/category-fix">Category Fix</a>
             <button className="btn btn-light" onClick={downloadTemplate}>Download Excel Template</button>
           </div>
         </nav>
@@ -195,7 +204,7 @@ export default function ParticipantsImportPage() {
           <div>
             <span className="badge">Bulk participant upload</span>
             <h1 style={{ marginTop: 12 }}>Upload participants with Excel or CSV</h1>
-            <p className="muted">Use headings like category, name, usercode, password, payment_status and stage. The stage can be Final Trial, Stage 1, Stage 2 or Stage 3.</p>
+            <p className="muted">Use headings like category, name, usercode, password, payment_status and stage. Category must be the exact contest category: {DEFAULT_CATEGORIES.join(', ')}. Do not use the broad registration category student.</p>
           </div>
 
           <div className="alert alert-info">
@@ -220,8 +229,8 @@ export default function ParticipantsImportPage() {
           <div className="grid grid-4">
             <Metric title="Rows Loaded" value={String(rows.length)} />
             <Metric title="Valid Rows" value={String(validCount)} />
+            <Metric title="Invalid Categories" value={String(invalidCategoryCount)} />
             <Metric title="Existing Codes" value={String(existingCount)} />
-            <Metric title="Default Stage" value={FINAL_TRIAL_STAGE} />
           </div>
 
           <div className="flex wrap no-print">
@@ -238,7 +247,7 @@ export default function ParticipantsImportPage() {
               <tbody>{rows.map((row, index) => {
                 const valid = row.category && row.name && row.usercode && row.password;
                 const exists = existingCodes.has(codeKey(row.usercode));
-                return <tr key={`${row.usercode}-${index}`}><td>{index + 1}</td><td>{row.category}</td><td>{row.name}</td><td><strong>{row.usercode}</strong></td><td>{row.password ? 'Provided' : ''}</td><td>{row.paymentStatus}</td><td>{row.contestStage}</td><td>{valid ? (exists ? (importMode === 'mergeUpdate' ? 'Will update existing' : 'Will skip existing') : 'Will add new') : 'Missing required field'}</td></tr>;
+                return <tr key={`${row.usercode}-${index}`}><td>{index + 1}</td><td>{row.category || 'Invalid category'}</td><td>{row.name}</td><td><strong>{row.usercode}</strong></td><td>{row.password ? 'Provided' : ''}</td><td>{row.paymentStatus}</td><td>{row.contestStage}</td><td>{valid ? (exists ? (importMode === 'mergeUpdate' ? 'Will update existing' : 'Will skip existing') : 'Will add new') : 'Missing field/exact category'}</td></tr>;
               })}</tbody>
             </table>
           </div>
