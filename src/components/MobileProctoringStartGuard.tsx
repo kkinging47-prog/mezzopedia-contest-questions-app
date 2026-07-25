@@ -35,10 +35,10 @@ export default function MobileProctoringStartGuard() {
     if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
 
     const mobile = isMobileBrowser();
-    const html = document.documentElement as HTMLElement & { requestFullscreen?: () => Promise<void> };
-    const originalFullscreen = html.requestFullscreen?.bind(html);
-    const mediaDevices = navigator.mediaDevices as MediaDevices | undefined;
-    const originalGetUserMedia = mediaDevices?.getUserMedia?.bind(mediaDevices);
+    const html = document.documentElement as any;
+    const originalFullscreen = typeof html.requestFullscreen === 'function' ? html.requestFullscreen.bind(html) : null;
+    const mediaDevices = navigator.mediaDevices as any;
+    const originalGetUserMedia = typeof mediaDevices?.getUserMedia === 'function' ? mediaDevices.getUserMedia.bind(mediaDevices) : null;
 
     if (mobile && originalFullscreen) {
       // Mobile fullscreen prompts are a common source of freezing. The test page
