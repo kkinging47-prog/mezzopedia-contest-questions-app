@@ -9,6 +9,29 @@ function optionText(options: any[], optionId: string) {
   return match.text || match.imageUrl || '';
 }
 
+function submittedTime(value?: string) {
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isFinite(time) ? time : 0;
+}
+
+function bestResultSession(a: any, b: any) {
+  const aSubmitted = submittedTime(a?.submitted_at) > 0;
+  const bSubmitted = submittedTime(b?.submitted_at) > 0;
+  if (aSubmitted !== bSubmitted) return aSubmitted ? -1 : 1;
+
+  const scoreDiff = Number(b?.score || 0) - Number(a?.score || 0);
+  if (scoreDiff) return scoreDiff;
+
+  const timeDiff = Number(a?.time_used_seconds || 0) - Number(b?.time_used_seconds || 0);
+  if (timeDiff) return timeDiff;
+
+  const aCompleted = a?.status === 'completed';
+  const bCompleted = b?.status === 'completed';
+  if (aCompleted !== bCompleted) return aCompleted ? -1 : 1;
+
+  return submittedTime(b?.submitted_at) - submittedTime(a?.submitted_at);
+}
+
 export async function POST(request: Request) {
   const { category, usercode, password } = await request.json().catch(() => ({}));
   const code = String(usercode || '').trim();
@@ -30,17 +53,21 @@ export async function POST(request: Request) {
   const ok = await verifyPassword(pass, participant.password_hash);
   if (!ok) return jsonError('Invalid result lookup details.', 401);
 
-  const { data: session, error: sError } = await supabaseAdmin
+  const { data: sessions, error: sError } = await supabaseAdmin
     .from('contest_sessions')
     .select('*')
     .eq('participant_id', participant.id)
-    .eq('status', 'completed')
+    .in('status', ['completed', 'expired'])
+    .not('submitted_at', 'is', null)
     .order('submitted_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .limit(25);
 
   if (sError) return jsonError(sError.message, 500);
-  if (!session) return jsonError('No completed result found for this code.', 404);
+  if (!sessions?.length) return jsonError('No completed result found for this code.', 404);
+
+  // Completed sessions are the normal source. Promoted results are archived as "expired",
+  // so they are also allowed here as long as they have a submission date.
+  const session = [...sessions].sort(bestResultSession)[0];
 
   const questionIds: string[] = Array.isArray(session.question_order) ? session.question_order.map(String) : [];
   const answers = publicAnswers(session);
@@ -87,6 +114,7 @@ export async function POST(request: Request) {
     result: {
       participant: { name: participant.name, usercode: participant.usercode, category: participant.category, paymentStatus: participant.payment_status },
       stage: session.contest_stage || '',
+      status: session.status,
       score: session.score || 0,
       maxScore: session.max_score || session.total_questions || 0,
       totalQuestions: session.total_questions || 0,
