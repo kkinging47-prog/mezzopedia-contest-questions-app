@@ -4,7 +4,7 @@
 insert into public.app_config (key, value)
 values (
   'runtimeSettings',
-  '{"contestLoadMode":true,"answerSaveDelayMs":2000,"snapshotMs":60000,"cameraCheckMs":20000,"audioCheckMs":6000,"panelCheckMs":15000,"cooldownMs":45000,"imageQuality":0.38,"maxImageWidth":480,"audioClipMs":2500,"requireDesktopScreen":true,"reducedMobileMode":true}'::jsonb
+  '{"contestLoadMode":true,"answerSaveDelayMs":2000,"snapshotMs":60000,"cameraCheckMs":20000,"audioCheckMs":6000,"panelCheckMs":15000,"cooldownMs":45000,"imageQuality":0.58,"maxImageWidth":840,"audioClipMs":2500,"requireDesktopScreen":true,"reducedMobileMode":true}'::jsonb
 )
 on conflict (key) do update set value = excluded.value, updated_at = now();
 
