@@ -21,7 +21,15 @@ type Result = {
   percentage: number;
   timeUsedSeconds: number;
   submittedAt: string;
+  attemptCount?: number;
+  hiddenAttemptCount?: number;
   proctoringSummary?: { riskLevel?: string; total?: number };
+};
+
+type ResultStats = {
+  allSessionCount: number;
+  duplicateAttemptCount: number;
+  dedupeRule?: string;
 };
 
 function formatTime(seconds: number) {
@@ -65,6 +73,7 @@ export default function AdminResultsPage() {
   const [targetStage, setTargetStage] = useState('Stage 1');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [results, setResults] = useState<Result[]>([]);
+  const [stats, setStats] = useState<ResultStats>({ allSessionCount: 0, duplicateAttemptCount: 0 });
 
   const rankedResults = useMemo(() => rankResults(results, category, stage), [results, category, stage]);
   const eligibleResults = useMemo(() => rankedResults.filter(result => canPromote(result, targetStage)), [rankedResults, targetStage]);
@@ -92,6 +101,7 @@ export default function AdminResultsPage() {
     setLoading(false);
     if (json.error) { setError(json.error); setMessage(''); return; }
     setResults(json.results || []);
+    setStats({ allSessionCount: json.allSessionCount || (json.results || []).length, duplicateAttemptCount: json.duplicateAttemptCount || 0, dedupeRule: json.dedupeRule || '' });
     setMessage('');
   }
 
@@ -112,6 +122,8 @@ export default function AdminResultsPage() {
       'Time Used Seconds': result.timeUsedSeconds,
       'Submission Date': formatSubmitted(result.submittedAt),
       'Submitted At Raw': result.submittedAt,
+      'Attempts Recorded': result.attemptCount || 1,
+      'Hidden Duplicate Attempts': result.hiddenAttemptCount || 0,
       'Proctoring Risk': result.proctoringSummary?.riskLevel || 'LOW',
       'Proctoring Events': result.proctoringSummary?.total || 0
     }));
@@ -185,7 +197,8 @@ export default function AdminResultsPage() {
           <div>
             <span className="badge">Official ranking order</span>
             <h1 style={{ marginTop: 12 }}>Results ranked by highest score, then least time</h1>
-            <p className="muted">The default order is always: highest score first. If scores are tied, the candidate who used the least time comes first. Category filtering keeps the same ranking rule. The submission date is recorded and shown because stages may remain open for more than one day.</p>
+            <p className="muted">The default order is always: highest score first. If scores are tied, the candidate who used the least time comes first. The submission date is recorded because stages may remain open for more than one day.</p>
+            <div className="alert alert-info">Duplicate-looking rows happen when one candidate has more than one saved session/result. The results page now shows only one official row per participant per completed stage, while counting hidden duplicate attempts for review.</div>
           </div>
 
           <div className="grid grid-3 no-print">
@@ -210,9 +223,9 @@ export default function AdminResultsPage() {
           </div>
 
           <div className="grid grid-4">
-            <Metric title="Total Results" value={String(results.length)} />
+            <Metric title="Official Results" value={String(results.length)} />
             <Metric title="Showing" value={String(rankedResults.length)} />
-            <Metric title="Eligible to Promote" value={String(eligibleResults.length)} />
+            <Metric title="Hidden Attempts" value={String(stats.duplicateAttemptCount)} />
             <Metric title="Order" value="Score ↓ / Time ↑" />
           </div>
         </section>
@@ -234,7 +247,7 @@ export default function AdminResultsPage() {
           {loading && <div className="alert alert-info">Loading results...</div>}
           {!loading && !rankedResults.length && <div className="alert alert-info">No results found for this filter.</div>}
           {!!rankedResults.length && <div className="table-wrap"><table>
-            <thead><tr><th>Select</th><th>Rank</th><th>Name</th><th>Code</th><th>Category</th><th>Completed Stage</th><th>Current Stage</th><th>Payment</th><th>Score</th><th>%</th><th>Time Used</th><th>Submission Date</th><th>Status</th><th>Risk</th></tr></thead>
+            <thead><tr><th>Select</th><th>Rank</th><th>Name</th><th>Code</th><th>Category</th><th>Completed Stage</th><th>Current Stage</th><th>Payment</th><th>Score</th><th>%</th><th>Time Used</th><th>Submission Date</th><th>Attempts</th><th>Status</th><th>Risk</th></tr></thead>
             <tbody>{rankedResults.map((result, index) => {
               const eligible = canPromote(result, targetStage);
               return <tr key={result.id}>
@@ -250,6 +263,7 @@ export default function AdminResultsPage() {
                 <td>{result.percentage}%</td>
                 <td>{formatTime(result.timeUsedSeconds)}</td>
                 <td>{formatSubmitted(result.submittedAt)}</td>
+                <td>{result.attemptCount || 1}{(result.hiddenAttemptCount || 0) > 0 && <div className="small muted">{result.hiddenAttemptCount} hidden duplicate(s)</div>}</td>
                 <td>{result.status === 'completed' ? 'Completed' : 'Archived / promoted'}{!eligible && <div className="small muted">Not eligible for {targetStage}</div>}</td>
                 <td>{result.proctoringSummary?.riskLevel || 'LOW'} ({result.proctoringSummary?.total || 0})</td>
               </tr>;
