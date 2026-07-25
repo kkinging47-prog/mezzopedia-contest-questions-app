@@ -52,6 +52,13 @@ export async function POST(request: NextRequest) {
 
   const body = await request.json().catch(() => ({}));
   const eventType = String(body.eventType || 'UNKNOWN').slice(0, 80);
+
+  // Test submission is a normal contest action, not a proctoring violation.
+  // This also prevents older cached test pages from saving TEST_SUBMISSION_ATTEMPT rows.
+  if (eventType === 'TEST_SUBMISSION_ATTEMPT') {
+    return Response.json({ success: true, skipped: true, reason: 'Routine test submission is not recorded as a proctoring violation.' });
+  }
+
   const severity = allowedSeverities.has(String(body.severity)) ? String(body.severity) : 'medium';
   const rawDetails = body.details && typeof body.details === 'object' ? body.details : {};
 
@@ -76,7 +83,7 @@ export async function POST(request: NextRequest) {
     details: safeDetails,
     evidence,
     user_agent: request.headers.get('user-agent') || '',
-    ip_address: request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || ''
+    ip_address: (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || request.headers.get('x-real-ip') || ''
   });
 
   if (error) return jsonError(error.message, 500);
