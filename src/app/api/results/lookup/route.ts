@@ -1,7 +1,7 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { verifyPassword } from '@/lib/auth';
 import { jsonError, normalizeCategory, percentage } from '@/lib/utils';
-import { publicAnswers } from '@/lib/sessionTime';
+import { activeElapsedSeconds, publicAnswers } from '@/lib/sessionTime';
 
 function optionText(options: any[], optionId: string) {
   const match = (options || []).find(option => String(option.id) === String(optionId));
@@ -14,6 +14,10 @@ function submittedTime(value?: string) {
   return Number.isFinite(time) ? time : 0;
 }
 
+function sessionTimeUsed(session: any) {
+  return activeElapsedSeconds(session, session?.submitted_at ? new Date(session.submitted_at) : new Date());
+}
+
 function bestResultSession(a: any, b: any) {
   const aSubmitted = submittedTime(a?.submitted_at) > 0;
   const bSubmitted = submittedTime(b?.submitted_at) > 0;
@@ -22,7 +26,7 @@ function bestResultSession(a: any, b: any) {
   const scoreDiff = Number(b?.score || 0) - Number(a?.score || 0);
   if (scoreDiff) return scoreDiff;
 
-  const timeDiff = Number(a?.time_used_seconds || 0) - Number(b?.time_used_seconds || 0);
+  const timeDiff = sessionTimeUsed(a) - sessionTimeUsed(b);
   if (timeDiff) return timeDiff;
 
   const aCompleted = a?.status === 'completed';
@@ -68,6 +72,7 @@ export async function POST(request: Request) {
   // Completed sessions are the normal source. Promoted results are archived as "expired",
   // so they are also allowed here as long as they have a submission date.
   const session = [...sessions].sort(bestResultSession)[0];
+  const timeUsedSeconds = sessionTimeUsed(session);
 
   const questionIds: string[] = Array.isArray(session.question_order) ? session.question_order.map(String) : [];
   const answers = publicAnswers(session);
@@ -119,7 +124,7 @@ export async function POST(request: Request) {
       maxScore: session.max_score || session.total_questions || 0,
       totalQuestions: session.total_questions || 0,
       percentage: percentage(session.score || 0, session.max_score || session.total_questions || 0),
-      timeUsedSeconds: session.time_used_seconds || 0,
+      timeUsedSeconds,
       submittedAt: session.submitted_at,
       proctoringSummary: session.proctoring_summary || {},
       script
