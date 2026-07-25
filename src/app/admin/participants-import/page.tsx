@@ -154,7 +154,7 @@ export default function ParticipantsImportPage() {
 
     const existingCount = validRows.filter(row => existingCodes.has(codeKey(row.usercode))).length;
     const confirmText = importMode === 'mergeUpdate'
-      ? `Merge & Update will add new participants and update ${existingCount} existing record(s). It will not delete any saved participant. Continue?`
+      ? `Merge & Update will add new participants and update ${existingCount} existing record(s). It will not delete saved participants and will not downgrade an existing payment status. Paid remains paid. Continue?`
       : `Add New Only will skip ${existingCount} existing record(s) and add only new codes. Continue?`;
     if (!confirm(confirmText)) return;
 
@@ -170,7 +170,7 @@ export default function ParticipantsImportPage() {
     if (!res.ok) { setError(json.error || 'Import failed.'); return; }
     setRows([]);
     setFileName('');
-    setMessage(`Import complete. Inserted: ${json.inserted || 0}. Updated: ${json.updated || 0}. Skipped existing: ${json.skippedExisting || 0}. Saved data was not deleted.`);
+    setMessage(`Import complete. Inserted: ${json.inserted || 0}. Updated: ${json.updated || 0}. Payment upgraded: ${json.paymentUpgraded || 0}. Payment protected from downgrade: ${json.preservedPaymentStatus || 0}. Skipped existing: ${json.skippedExisting || 0}. Saved data was not deleted.`);
     fetch('/api/admin/participants').then(r => r.json()).then(data => {
       setExistingCodes(new Set<string>((data.participants || []).map((item: any) => codeKey(item.usercode || ''))));
     }).catch(() => null);
@@ -208,7 +208,7 @@ export default function ParticipantsImportPage() {
           </div>
 
           <div className="alert alert-info">
-            <strong>Merge & Update is safe:</strong> it adds new codes and updates matching existing codes. It does not delete previously saved participants.
+            <strong>Merge & Update is safe:</strong> it adds new codes and updates matching existing codes. It does not delete previously saved participants, and payment status is protected from going backwards. Paid remains paid; pending will not be changed back to unpaid.
           </div>
 
           <div className="grid grid-2">
@@ -247,7 +247,7 @@ export default function ParticipantsImportPage() {
               <tbody>{rows.map((row, index) => {
                 const valid = row.category && row.name && row.usercode && row.password;
                 const exists = existingCodes.has(codeKey(row.usercode));
-                return <tr key={`${row.usercode}-${index}`}><td>{index + 1}</td><td>{row.category || 'Invalid category'}</td><td>{row.name}</td><td><strong>{row.usercode}</strong></td><td>{row.password ? 'Provided' : ''}</td><td>{row.paymentStatus}</td><td>{row.contestStage}</td><td>{valid ? (exists ? (importMode === 'mergeUpdate' ? 'Will update existing' : 'Will skip existing') : 'Will add new') : 'Missing field/exact category'}</td></tr>;
+                return <tr key={`${row.usercode}-${index}`}><td>{index + 1}</td><td>{row.category || 'Invalid category'}</td><td>{row.name}</td><td><strong>{row.usercode}</strong></td><td>{row.password ? 'Provided' : ''}</td><td>{row.paymentStatus}</td><td>{row.contestStage}</td><td>{valid ? (exists ? (importMode === 'mergeUpdate' ? 'Will update existing, without downgrading payment' : 'Will skip existing') : 'Will add new') : 'Missing field/exact category'}</td></tr>;
               })}</tbody>
             </table>
           </div>
