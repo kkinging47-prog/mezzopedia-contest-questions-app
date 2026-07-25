@@ -40,6 +40,30 @@ function normalizePaymentStatus(value: unknown) {
   return 'unpaid';
 }
 
+function paymentRank(status: string) {
+  const normalized = normalizePaymentStatus(status);
+  if (normalized === 'paid') return 2;
+  if (normalized === 'pending') return 1;
+  return 0;
+}
+
+function mergePaymentStatus(existingStatus: unknown, incomingStatus: unknown) {
+  const existing = normalizePaymentStatus(existingStatus);
+  const incoming = normalizePaymentStatus(incomingStatus);
+  const existingRank = paymentRank(existing);
+  const incomingRank = paymentRank(incoming);
+
+  if (incomingRank > existingRank) {
+    return { status: incoming, changed: true, protected: false };
+  }
+
+  if (incomingRank < existingRank) {
+    return { status: existing, changed: false, protected: true };
+  }
+
+  return { status: existing, changed: false, protected: false };
+}
+
 function normalizeCategory(value: unknown) {
   const raw = safeText(value);
   if (!raw) return '';
@@ -148,6 +172,8 @@ async function importParticipants(items: ParticipantInput[], stageSettings: Stag
   let inserted = 0;
   let updated = 0;
   let skippedExisting = 0;
+  let paymentUpgraded = 0;
+  let preservedPaymentStatus = 0;
   const skippedDuplicates: string[] = [];
   const mode = importMode === 'addOnly' ? 'addOnly' : 'mergeUpdate';
 
@@ -164,6 +190,12 @@ async function importParticipants(items: ParticipantInput[], stageSettings: Stag
         skippedExisting += 1;
         continue;
       }
+
+      const paymentMerge = mergePaymentStatus(existing[0].payment_status, clean.paymentStatus);
+      row.payment_status = paymentMerge.status;
+      if (paymentMerge.changed) paymentUpgraded += 1;
+      if (paymentMerge.protected) preservedPaymentStatus += 1;
+
       const { error } = await supabaseAdmin.from('participants').update(row).eq('id', existing[0].id);
       if (error) return { error: error.message };
       updated += 1;
@@ -175,7 +207,7 @@ async function importParticipants(items: ParticipantInput[], stageSettings: Stag
     inserted += 1;
   }
 
-  return { imported: inserted + updated, inserted, updated, skippedExisting, skippedDuplicates, invalidCategoryCount };
+  return { imported: inserted + updated, inserted, updated, skippedExisting, skippedDuplicates, invalidCategoryCount, paymentUpgraded, preservedPaymentStatus };
 }
 
 export async function GET(request: NextRequest) {
