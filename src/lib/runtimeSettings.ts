@@ -8,9 +8,9 @@ export const DEFAULT_RUNTIME_SETTINGS = {
   audioCheckMs: 6000,
   panelCheckMs: 15000,
   cooldownMs: 45000,
-  // Keep evidence images useful but small enough for many simultaneous candidates.
-  imageQuality: 0.38,
-  maxImageWidth: 480,
+  // Clearer evidence screenshots for admin review while still keeping files small enough for contest use.
+  imageQuality: 0.58,
+  maxImageWidth: 840,
   audioClipMs: 2500,
   // Require screen sharing on desktop/laptop where supported. Mobile browsers are handled more lightly.
   requireDesktopScreen: true,
