@@ -14,22 +14,42 @@ function questionButtons() {
     .filter(button => /^\d+$/.test((button.textContent || '').trim()));
 }
 
+function answeredCounter() {
+  const nodes = Array.from(document.querySelectorAll<HTMLElement>('.small.muted'));
+  for (const node of nodes) {
+    const match = (node.textContent || '').match(/Answered:\s*(\d+)\s*\/\s*(\d+)/i);
+    if (match) {
+      const answered = Number(match[1]);
+      const total = Number(match[2]);
+      if (Number.isFinite(answered) && Number.isFinite(total) && total > 0) return { answered, total };
+    }
+  }
+  return null;
+}
+
 function currentQuestionHasSelectedOption() {
   return Boolean(document.querySelector('.option.selected'));
 }
 
 function isAnswered(button: HTMLButtonElement) {
-  const text = (button.textContent || '').trim();
   const active = button.classList.contains('active');
   const inlineStyle = button.getAttribute('style') || '';
   const computed = window.getComputedStyle(button);
-  const looksAnswered = inlineStyle.includes('#0f8a4b') || computed.backgroundColor === 'rgb(15, 138, 75)';
-  if (active) return currentQuestionHasSelectedOption() || looksAnswered;
+  const looksAnswered = inlineStyle.includes('#0f8a4b') || computed.backgroundColor === 'rgb(15, 138, 75)' || computed.backgroundColor === 'rgb(15 138 75)';
+  if (active) return currentQuestionHasSelectedOption() || looksAnswered || button.dataset.answerState === 'answered';
   return looksAnswered || button.dataset.answerState === 'answered';
 }
 
 function analyze(): AnalysisResult {
   const buttons = questionButtons();
+  const counter = answeredCounter();
+
+  // The React test page is the source of truth. If it says all questions are answered,
+  // do not let this DOM helper block submission because of stale/computed styles.
+  if (counter && counter.total > 0 && counter.answered >= counter.total) {
+    return { unansweredNumbers: [], unansweredButtons: [], total: counter.total };
+  }
+
   const unansweredButtons = buttons.filter(button => !isAnswered(button));
   const unansweredNumbers = unansweredButtons.map(button => Number((button.textContent || '').trim())).filter(Boolean);
   return { unansweredNumbers, unansweredButtons, total: buttons.length };
@@ -75,7 +95,10 @@ function ensureStyle() {
 }
 
 function markUnanswered(result: AnalysisResult) {
-  questionButtons().forEach(button => button.classList.remove('unanswered-guard-mark'));
+  questionButtons().forEach(button => {
+    button.classList.remove('unanswered-guard-mark');
+    button.removeAttribute('title');
+  });
   result.unansweredButtons.forEach(button => {
     button.classList.add('unanswered-guard-mark');
     button.title = 'This question has not been answered yet';
@@ -132,7 +155,13 @@ export default function TestSubmitGuard() {
     if (pathname !== '/test') return;
     ensureStyle();
 
-    const refresh = () => window.setTimeout(() => renderPrompt(analyze(), false), 120);
+    const refresh = () => window.setTimeout(() => {
+      const existingPrompt = document.querySelector('[data-unanswered-guard="true"]');
+      const result = analyze();
+      if (existingPrompt || result.unansweredNumbers.length === 0) renderPrompt(result, false);
+      else markUnanswered(result);
+    }, 120);
+
     const onClickCapture = (event: MouseEvent) => {
       const button = (event.target as HTMLElement | null)?.closest('button');
       if (!button) return;
@@ -146,6 +175,7 @@ export default function TestSubmitGuard() {
           renderPrompt(result, true);
           return;
         }
+        renderPrompt(result, false);
       }
       refresh();
     };
