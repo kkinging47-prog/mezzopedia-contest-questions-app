@@ -231,6 +231,8 @@ export default function TestPage() {
   }
 
   const logViolation = useCallback(async (eventType: string, severity: Severity, details: Record<string, unknown> = {}, captureEvidence: CaptureEvidence = false) => {
+    if (eventType === 'TEST_SUBMISSION_ATTEMPT') return;
+
     const now = Date.now();
     const key = `${eventType}:${severity}`;
     const throttleMs = eventType === 'PERIODIC_PROCTORING_SNAPSHOT' ? Math.max(15000, runtime.snapshotMs - 1000) : (captureEvidence ? runtime.cooldownMs : 3000);
@@ -503,7 +505,6 @@ export default function TestPage() {
     setError('');
     if (answerTimerRef.current) window.clearTimeout(answerTimerRef.current);
     await flushPendingAnswers();
-    await logViolation('TEST_SUBMISSION_ATTEMPT', 'low', { force, unanswered }, true);
     const res = await fetch('/api/session/submit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force }) });
     const json = await res.json().catch(() => ({}));
     setSubmitting(false);
