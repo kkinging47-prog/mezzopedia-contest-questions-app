@@ -7,6 +7,8 @@ import { NextResponse } from 'next/server';
 import { getActiveParticipantSession } from '@/lib/sessionGuard';
 import { activeElapsedSeconds, publicAnswers } from '@/lib/sessionTime';
 
+const ROUTINE_PROCTORING_EVENTS = new Set(['TEST_SUBMISSION_ATTEMPT']);
+
 export async function POST(request: NextRequest) {
   const { session, error, status } = await getActiveParticipantSession(request, '*');
   if (error || !session) return jsonError(error || 'Not signed in.', status);
@@ -79,10 +81,11 @@ export async function POST(request: NextRequest) {
 }
 
 function summarizeProctoring(events: Array<{ event_type: string; severity: string }>) {
-  const total = events.length;
-  const critical = events.filter(e => e.severity === 'critical').length;
-  const high = events.filter(e => e.severity === 'high').length;
-  const byType = events.reduce<Record<string, number>>((acc, event) => {
+  const reviewEvents = events.filter(event => !ROUTINE_PROCTORING_EVENTS.has(event.event_type));
+  const total = reviewEvents.length;
+  const critical = reviewEvents.filter(e => e.severity === 'critical').length;
+  const high = reviewEvents.filter(e => e.severity === 'high').length;
+  const byType = reviewEvents.reduce<Record<string, number>>((acc, event) => {
     acc[event.event_type] = (acc[event.event_type] || 0) + 1;
     return acc;
   }, {});
