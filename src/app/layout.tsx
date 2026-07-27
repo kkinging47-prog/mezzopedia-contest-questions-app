@@ -3,6 +3,7 @@ import './globals.css';
 import { APP_NAME } from '@/lib/constants';
 import AdminQuickLinks from '@/components/AdminQuickLinks';
 import CursorSymbolInsertGuard from '@/components/CursorSymbolInsertGuard';
+import RobustTestSubmitGuard from '@/components/RobustTestSubmitGuard';
 import TestSubmitGuard from '@/components/TestSubmitGuard';
 import MobileProctoringStartGuard from '@/components/MobileProctoringStartGuard';
 
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <AdminQuickLinks />
         <CursorSymbolInsertGuard />
+        <RobustTestSubmitGuard />
         <TestSubmitGuard />
         <MobileProctoringStartGuard />
       </body>
