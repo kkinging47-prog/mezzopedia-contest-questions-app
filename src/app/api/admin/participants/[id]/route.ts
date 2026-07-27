@@ -29,8 +29,8 @@ async function allowRetake(id: string, stageInput: unknown) {
     .select('id,name,usercode,category,contest_stage')
     .eq('id', id)
     .maybeSingle();
-  if (participantError) return { error: participantError.message, status: 500 };
-  if (!participant) return { error: 'Participant not found.', status: 404 };
+  if (participantError) return { ok: false, error: participantError.message, status: 500 };
+  if (!participant) return { ok: false, error: 'Participant not found.', status: 404 };
 
   const { data: sessions, error: sessionReadError } = await supabaseAdmin
     .from('contest_sessions')
@@ -38,7 +38,7 @@ async function allowRetake(id: string, stageInput: unknown) {
     .eq('participant_id', id)
     .eq('contest_stage', stage)
     .in('status', ['completed', 'in_progress']);
-  if (sessionReadError) return { error: sessionReadError.message, status: 500 };
+  if (sessionReadError) return { ok: false, error: sessionReadError.message, status: 500 };
 
   const sessionIds = (sessions || []).map(session => session.id);
   if (sessionIds.length) {
@@ -46,14 +46,14 @@ async function allowRetake(id: string, stageInput: unknown) {
       .from('contest_sessions')
       .update({ status: 'expired', updated_at: now })
       .in('id', sessionIds);
-    if (sessionUpdateError) return { error: sessionUpdateError.message, status: 500 };
+    if (sessionUpdateError) return { ok: false, error: sessionUpdateError.message, status: 500 };
   }
 
   const { error: updateParticipantError } = await supabaseAdmin
     .from('participants')
     .update({ contest_stage: stage, is_active: true, login_count: 0, last_login_at: null, updated_at: now })
     .eq('id', id);
-  if (updateParticipantError) return { error: updateParticipantError.message, status: 500 };
+  if (updateParticipantError) return { ok: false, error: updateParticipantError.message, status: 500 };
 
   await supabaseAdmin.from('admin_audit_logs').insert({
     action: 'ALLOW_STAGE_RETAKE',
@@ -67,7 +67,7 @@ async function allowRetake(id: string, stageInput: unknown) {
     }
   }).then(() => null);
 
-  return { stage, archivedSessionCount: sessionIds.length };
+  return { ok: true, stage, archivedSessionCount: sessionIds.length };
 }
 
 export async function PUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
@@ -78,8 +78,8 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
 
   if (body.retakeStage || body.allowRetake) {
     const result = await allowRetake(id, body.retakeStage || body.contestStage || body.contest_stage || 'Stage 1');
-    if ('error' in result) return jsonError(result.error, result.status);
-    return Response.json({ success: true, retake: true, ...result });
+    if (!result.ok) return jsonError(result.error || 'Could not reopen this stage for retake.', result.status || 500);
+    return Response.json({ success: true, retake: true, stage: result.stage, archivedSessionCount: result.archivedSessionCount });
   }
 
   const newUsercode = safeText(body.usercode);
