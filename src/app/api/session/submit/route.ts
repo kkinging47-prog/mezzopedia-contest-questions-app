@@ -9,16 +9,52 @@ import { activeElapsedSeconds, publicAnswers } from '@/lib/sessionTime';
 
 const ROUTINE_PROCTORING_EVENTS = new Set(['TEST_SUBMISSION_ATTEMPT']);
 
+function cleanIncomingAnswers(raw: unknown, questionIds: string[]) {
+  const incoming = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const allowed = new Set(questionIds.map(String));
+  const clean: Record<string, string> = {};
+
+  for (const [rawQuestionId, rawOptionId] of Object.entries(incoming)) {
+    const questionId = String(rawQuestionId);
+    const optionId = String(rawOptionId || '').trim().slice(0, 12);
+    if (!allowed.has(questionId) || !optionId) continue;
+    clean[questionId] = optionId;
+  }
+
+  return clean;
+}
+
+function completedResponse(session: any, alreadyCompleted = false) {
+  const response = NextResponse.json({
+    success: true,
+    alreadyCompleted,
+    score: session.score || 0,
+    maxScore: session.max_score || session.total_questions || 0,
+    totalQuestions: session.total_questions || 0
+  });
+  clearCookie(response, COOKIE_NAMES.participant);
+  return response;
+}
+
 export async function POST(request: NextRequest) {
   const { session, error, status } = await getActiveParticipantSession(request, '*');
   if (error || !session) return jsonError(error || 'Not signed in.', status);
 
-  const { force } = await request.json().catch(() => ({}));
-  if (session.status !== 'in_progress') return jsonError('Session has already ended.', 403);
+  const body = await request.json().catch(() => ({}));
+  const force = Boolean(body.force);
 
-  const questionIds: string[] = session.question_order || [];
-  const answers = publicAnswers(session);
-  const unanswered = questionIds.filter(id => !answers[id]);
+  // If a previous submit request already completed but the browser did not receive
+  // the response, treat retry as success so candidates are not left hanging.
+  if (session.status === 'completed') return completedResponse(session, true);
+  if (session.status !== 'in_progress') return jsonError('Session has already ended. Please check your results page.', 403);
+
+  const questionIds: string[] = Array.isArray(session.question_order) ? session.question_order.map(String) : [];
+  const storedAnswers = publicAnswers(session);
+  const finalAnswers = {
+    ...storedAnswers,
+    ...cleanIncomingAnswers(body.answers, questionIds)
+  };
+  const unanswered = questionIds.filter(id => !finalAnswers[id]);
   const now = new Date();
   const timeUsedSeconds = activeElapsedSeconds(session, now);
   const expired = timeUsedSeconds >= 70 * 60;
@@ -41,22 +77,23 @@ export async function POST(request: NextRequest) {
   for (const q of questions || []) {
     const points = Number(q.points || 1);
     maxScore += points;
-    const selected = answers[q.id];
+    const selected = finalAnswers[String(q.id)];
     const isCorrect = String(selected || '') === String(q.correct_option_id);
     if (isCorrect) score += points;
-    breakdown[q.id] = { selected, correct: q.correct_option_id, isCorrect, points };
+    breakdown[String(q.id)] = { selected, correct: q.correct_option_id, isCorrect, points };
   }
 
   const submittedAt = now.toISOString();
 
-  const { data: events } = await supabaseAdmin
+  const { data: events, error: eventError } = await supabaseAdmin
     .from('proctoring_events')
     .select('event_type,severity')
-    .eq('session_id', session.id);
+    .eq('session_id', session.id)
+    .limit(1000);
 
-  const proctoringSummary = summarizeProctoring(events || []);
+  const proctoringSummary = summarizeProctoring(eventError ? [] : events || []);
 
-  const { error: updateError } = await supabaseAdmin
+  const { data: completed, error: updateError } = await supabaseAdmin
     .from('contest_sessions')
     .update({
       status: 'completed',
@@ -65,13 +102,28 @@ export async function POST(request: NextRequest) {
       score,
       max_score: maxScore,
       total_questions: questionIds.length,
-      answers,
+      answers: finalAnswers,
       answer_breakdown: breakdown,
-      proctoring_summary: proctoringSummary
+      proctoring_summary: proctoringSummary,
+      updated_at: submittedAt
     })
-    .eq('id', session.id);
+    .eq('id', session.id)
+    .eq('status', 'in_progress')
+    .select('score,max_score,total_questions')
+    .maybeSingle();
 
   if (updateError) return jsonError(updateError.message, 500);
+
+  // If another request finished first, return success instead of leaving the candidate stuck.
+  if (!completed) {
+    const { data: latest } = await supabaseAdmin
+      .from('contest_sessions')
+      .select('score,max_score,total_questions,status')
+      .eq('id', session.id)
+      .maybeSingle();
+    if (latest?.status === 'completed') return completedResponse(latest, true);
+    return jsonError('Could not complete submission. Please try Submit Test again.', 409);
+  }
 
   await supabaseAdmin.from('participants').update({ is_active: false }).eq('id', session.participant_id).then(() => null);
 
