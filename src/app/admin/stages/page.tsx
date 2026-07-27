@@ -178,6 +178,27 @@ export default function StageControlsPage() {
     loadStageData(FINAL_TRIAL_STAGE, category);
   }
 
+  async function assignPaidToStage1() {
+    const warning = 'This will move all PAID participant codes directly to Stage 1, open Stage 1, reset their login count, and cancel only their unfinished non-Stage 1 sessions. Candidates who already completed or are currently writing Stage 1 will not be restarted. Continue?';
+    if (!confirm(warning)) return;
+    setLoading(true);
+    const res = await fetch('/api/admin/stages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'assignPaidToStage1' })
+    });
+    const json = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) {
+      setMessage(json.error || 'Could not assign paid candidates to Stage 1.');
+      return;
+    }
+    setFromStage('Stage 1');
+    setToStage('Stage 2');
+    setMessage(`Assigned ${json.assignedCount || 0} paid candidate(s) to Stage 1 out of ${json.paidCount || 0} paid code(s). Skipped ${json.skippedStage1CompletedCount || 0} already completed Stage 1 and ${json.skippedStage1InProgressCount || 0} already writing Stage 1.`);
+    loadStageData('Stage 1', category);
+  }
+
   function updateScheduleDraft(stage: string, field: keyof ScheduleDraft, value: string) {
     setScheduleDrafts(prev => ({ ...prev, [stage]: { ...(prev[stage] || { startsAt: '', endsAt: '' }), [field]: value } }));
   }
@@ -282,21 +303,33 @@ export default function StageControlsPage() {
         <section className="card card-pad grid" style={{ marginBottom: 18 }}>
           <div>
             <h1 style={{ marginBottom: 6 }}>Open, close, schedule and promote contest stages</h1>
-            <p className="muted">Final Trial is now a separate stage before Stage 1. Upload 10 trial questions per category with phase/stage set to Final Trial, assign candidates to Final Trial, then promote them to Stage 1 before the main quiz.</p>
+            <p className="muted">Final Trial is now a separate stage before Stage 1. If you decide to skip or bypass the trial for paid candidates, use the paid Stage 1 assignment button below.</p>
           </div>
 
           <div className="alert alert-info">
             <strong>Current active phase:</strong> {activePhase}. Time settings use the admin device time; for Ghana contests, enter Ghana local time.
           </div>
 
-          <div className="card card-pad" style={{ boxShadow: 'none', border: '1px solid rgba(37,99,235,0.25)' }}>
-            <h2 style={{ marginBottom: 6 }}>Final Trial setup</h2>
-            <p className="muted">Use this before the main quiz. It moves every participant code to Final Trial so they can practise with your 10 trial questions per category. After the trial, choose Final Trial as the completed stage below, select candidates, and promote them to Stage 1.</p>
-            <div className="flex wrap no-print">
-              <button className="btn btn-primary" onClick={assignAllToFinalTrial} disabled={loading}>Assign All Participants to Final Trial</button>
-              <button className="btn btn-light" onClick={() => { setFromStage(FINAL_TRIAL_STAGE); setToStage('Stage 1'); loadStageData(FINAL_TRIAL_STAGE, category); }} disabled={loading}>View Final Trial Results</button>
+          <div className="grid grid-2">
+            <div className="card card-pad" style={{ boxShadow: 'none', border: '1px solid rgba(37,99,235,0.25)' }}>
+              <h2 style={{ marginBottom: 6 }}>Final Trial setup</h2>
+              <p className="muted">Use this before the main quiz. It moves every participant code to Final Trial so they can practise with your 10 trial questions per category. After the trial, choose Final Trial as the completed stage below, select candidates, and promote them to Stage 1.</p>
+              <div className="flex wrap no-print">
+                <button className="btn btn-primary" onClick={assignAllToFinalTrial} disabled={loading}>Assign All Participants to Final Trial</button>
+                <button className="btn btn-light" onClick={() => { setFromStage(FINAL_TRIAL_STAGE); setToStage('Stage 1'); loadStageData(FINAL_TRIAL_STAGE, category); }} disabled={loading}>View Final Trial Results</button>
+              </div>
+              {finalTrialSummary && <p className="small muted" style={{ marginTop: 10 }}>Final Trial currently has <strong>{finalTrialSummary.participantCount}</strong> assigned participant code(s), <strong>{finalTrialSummary.activeParticipantCount}</strong> open code(s), and <strong>{finalTrialSummary.completedCount}</strong> completed submission(s).</p>}
             </div>
-            {finalTrialSummary && <p className="small muted" style={{ marginTop: 10 }}>Final Trial currently has <strong>{finalTrialSummary.participantCount}</strong> assigned participant code(s), <strong>{finalTrialSummary.activeParticipantCount}</strong> open code(s), and <strong>{finalTrialSummary.completedCount}</strong> completed submission(s).</p>}
+
+            <div className="card card-pad" style={{ boxShadow: 'none', border: '1px solid rgba(15,138,75,0.25)' }}>
+              <h2 style={{ marginBottom: 6 }}>Bypass trial for paid candidates</h2>
+              <p className="muted">Use this now if most paid candidates did not write the Final Trial. It assigns all paid candidates directly to Stage 1 and opens Stage 1 without requiring a Final Trial result.</p>
+              <div className="flex wrap no-print">
+                <button className="btn btn-success" onClick={assignPaidToStage1} disabled={loading}>Assign All Paid Candidates to Stage 1</button>
+                <button className="btn btn-light" onClick={() => { setFromStage('Stage 1'); setToStage('Stage 2'); loadStageData('Stage 1', category); }} disabled={loading}>View Stage 1 Results</button>
+              </div>
+              <p className="small muted" style={{ marginTop: 10 }}>This skips candidates who already completed Stage 1 and does not restart candidates already writing Stage 1.</p>
+            </div>
           </div>
 
           <div className="grid grid-3">
@@ -346,7 +379,7 @@ export default function StageControlsPage() {
             <button className="btn btn-primary" onClick={promoteSelected} disabled={loading || selectedIds.length === 0}>Promote Selected ({selectedIds.length})</button>
           </div>
 
-          <div className="alert alert-info"><strong>Recommended workflow:</strong> upload Final Trial questions, assign all participants to Final Trial, set/open Final Trial, allow trial submissions, promote them from Final Trial to Stage 1, set/open Stage 1, then start the main quiz.</div>
+          <div className="alert alert-info"><strong>Recommended workflow:</strong> upload Final Trial questions, assign all participants to Final Trial, set/open Final Trial, allow trial submissions, promote them from Final Trial to Stage 1, set/open Stage 1, then start the main quiz. If you are bypassing trial, use “Assign All Paid Candidates to Stage 1” above.</div>
 
           <div className="table-wrap">
             <table>
