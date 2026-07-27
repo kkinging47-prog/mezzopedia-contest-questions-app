@@ -23,15 +23,17 @@ function bestResultSession(a: any, b: any) {
   const bSubmitted = submittedTime(b?.submitted_at) > 0;
   if (aSubmitted !== bSubmitted) return aSubmitted ? -1 : 1;
 
+  // Retake setup archives the old attempt as expired. Once the candidate writes
+  // again, show the new completed result instead of the older archived result.
+  const aCompleted = a?.status === 'completed';
+  const bCompleted = b?.status === 'completed';
+  if (aCompleted !== bCompleted) return aCompleted ? -1 : 1;
+
   const scoreDiff = Number(b?.score || 0) - Number(a?.score || 0);
   if (scoreDiff) return scoreDiff;
 
   const timeDiff = sessionTimeUsed(a) - sessionTimeUsed(b);
   if (timeDiff) return timeDiff;
-
-  const aCompleted = a?.status === 'completed';
-  const bCompleted = b?.status === 'completed';
-  if (aCompleted !== bCompleted) return aCompleted ? -1 : 1;
 
   return submittedTime(b?.submitted_at) - submittedTime(a?.submitted_at);
 }
@@ -69,8 +71,9 @@ export async function POST(request: Request) {
   if (sError) return jsonError(sError.message, 500);
   if (!sessions?.length) return jsonError('No completed result found for this code.', 404);
 
-  // Completed sessions are the normal source. Promoted results are archived as "expired",
-  // so they are also allowed here as long as they have a submission date.
+  // Completed sessions are the normal source. Promoted or retake-replaced results
+  // are archived as "expired", so they are still allowed for history when there
+  // is no newer completed result for the same candidate.
   const session = [...sessions].sort(bestResultSession)[0];
   const timeUsedSeconds = sessionTimeUsed(session);
 
