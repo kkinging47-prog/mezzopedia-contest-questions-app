@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { NextResponse } from 'next/server';
 import { COOKIE_NAMES, FINAL_TRIAL_STAGE, QUESTION_COUNT_OPTIONS, TEST_DURATION_MINUTES } from '@/lib/constants';
-import { setSecureCookie, signToken, verifyPassword } from '@/lib/auth';
+import { setSecureCookie, signToken, verifyParticipantPassword } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeCategory, normalizeContestStage, shuffle } from '@/lib/utils';
 import { answersWithResumeMeta, remainingSessionSeconds } from '@/lib/sessionTime';
@@ -46,7 +46,7 @@ async function findParticipantByCodeAndPassword(usercode: string, password: stri
   const candidates = data || [];
   const matches = [];
   for (const candidate of candidates) {
-    if (await verifyPassword(password, candidate.password_hash)) matches.push(candidate);
+    if (await verifyParticipantPassword(password, candidate.password_hash)) matches.push(candidate);
   }
 
   if (matches.length === 1) return { participant: matches[0], error: null };
