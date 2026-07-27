@@ -31,14 +31,40 @@ export type ParticipantTokenPayload = {
   loginToken?: string;
 };
 
+export function normalizeParticipantPassword(password: string) {
+  return String(password || '').trim().toLowerCase();
+}
+
+function participantPasswordVariants(password: string) {
+  const raw = String(password || '');
+  const trimmed = raw.trim();
+  return Array.from(new Set([
+    raw,
+    trimmed,
+    trimmed.toLowerCase(),
+    trimmed.toUpperCase()
+  ])).filter(Boolean);
+}
+
 export async function hashPassword(password: string) {
   // bcryptjs cost 12 is too slow for bulk participant imports on serverless functions.
   // Existing hashes still verify, while new imports use a stable configurable cost.
   return bcrypt.hash(password, getPasswordHashRounds());
 }
 
+export async function hashParticipantPassword(password: string) {
+  return hashPassword(normalizeParticipantPassword(password));
+}
+
 export async function verifyPassword(password: string, hash: string) {
   return bcrypt.compare(password, hash);
+}
+
+export async function verifyParticipantPassword(password: string, hash: string) {
+  for (const candidate of participantPasswordVariants(password)) {
+    if (await bcrypt.compare(candidate, hash)) return true;
+  }
+  return false;
 }
 
 export async function signToken(payload: AdminTokenPayload | ParticipantTokenPayload, maxAgeSeconds: number) {
