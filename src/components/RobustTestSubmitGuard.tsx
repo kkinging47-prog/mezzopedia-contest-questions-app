@@ -6,10 +6,7 @@ import { usePathname } from 'next/navigation';
 type SubmitState = {
   questionIds: string[];
   answers: Record<string, string>;
-  confirmedAnswers: Record<string, string>;
-  currentQuestionIndex: number;
   submitting: boolean;
-  confirming: boolean;
   startedAt: number;
 };
 
@@ -50,11 +47,6 @@ function extractCurrentIndex() {
   return Number.isFinite(number) && number > 0 ? number - 1 : 0;
 }
 
-function selectedOptionFromDom() {
-  const selected = document.querySelector<HTMLButtonElement>('button.option.selected');
-  return (selected?.querySelector('strong')?.textContent || '').replace('.', '').trim();
-}
-
 function answeredCounter() {
   const nodes = Array.from(document.querySelectorAll<HTMLElement>('.small.muted'));
   for (const node of nodes) {
@@ -62,6 +54,11 @@ function answeredCounter() {
     if (match) return { answered: Number(match[1]), total: Number(match[2]) };
   }
   return null;
+}
+
+function selectedOptionFromDom() {
+  const selected = document.querySelector<HTMLButtonElement>('button.option.selected');
+  return (selected?.querySelector('strong')?.textContent || '').replace('.', '').trim();
 }
 
 function ensurePanel() {
@@ -110,31 +107,18 @@ async function fetchJsonWithTimeout(url: string, body: unknown, timeoutMs: numbe
   }
 }
 
-function isForwardNavigationButton(button: HTMLButtonElement | null, currentIndex: number) {
-  if (!button || isTestSubmitButton(button)) return false;
-  const label = (button.textContent || '').trim().toLowerCase();
-  if (label === 'next') return true;
-
-  const number = Number(label);
-  const isQuestionNav = Number.isFinite(number) && button.closest('.question-nav');
-  if (!isQuestionNav) return false;
-  return number - 1 > currentIndex;
-}
-
-function isNavigationButton(button: HTMLButtonElement | null) {
-  if (!button || isTestSubmitButton(button)) return false;
-  const label = (button.textContent || '').trim().toLowerCase();
-  if (label === 'next' || label === 'previous') return true;
-
-  const number = Number(label);
-  return Number.isFinite(number) && Boolean(button.closest('.question-nav'));
+function markMissingQuestions(state: SubmitState) {
+  const missing: number[] = [];
+  state.questionIds.forEach((id, index) => {
+    if (!state.answers[id]) missing.push(index + 1);
+  });
+  return missing;
 }
 
 export default function RobustTestSubmitGuard() {
   const pathname = usePathname();
-  const stateRef = useRef<SubmitState>({ questionIds: [], answers: {}, confirmedAnswers: {}, currentQuestionIndex: 0, submitting: false, confirming: false, startedAt: 0 });
+  const stateRef = useRef<SubmitState>({ questionIds: [], answers: {}, submitting: false, startedAt: 0 });
   const originalFetchRef = useRef<any>(null);
-  const bypassNavigationRef = useRef(false);
 
   useEffect(() => {
     if (pathname !== '/test') return;
@@ -143,72 +127,6 @@ export default function RobustTestSubmitGuard() {
     const state = stateRef.current;
     const originalFetch = window.fetch.bind(window);
     originalFetchRef.current = originalFetch;
-
-    async function saveAnswer(questionId: string, optionId: string, index: number, quiet = false) {
-      if (!questionId || !optionId) return false;
-      if (state.confirmedAnswers[questionId] === optionId) return true;
-
-      try {
-        if (!quiet) showPanel('Confirming and saving your selected answer...', 'info');
-        const { response, json } = await fetchJsonWithTimeout('/api/session/answer', {
-          answers: { [questionId]: optionId },
-          currentQuestionIndex: index
-        }, 12000);
-
-        if (response.ok || json?.success) {
-          state.answers = { ...state.answers, [questionId]: optionId };
-          state.confirmedAnswers = { ...state.confirmedAnswers, [questionId]: optionId };
-          if (!quiet) showPanel('Answer confirmed and saved. Moving on...', 'success');
-          return true;
-        }
-
-        if (!quiet) showPanel(json?.error || 'Could not confirm this answer. Please check your internet and try again.', 'error');
-      } catch {
-        if (!quiet) showPanel('Network issue: could not confirm this answer. Please try again before moving on.', 'error');
-      }
-
-      return false;
-    }
-
-    function currentQuestionId() {
-      return state.questionIds[extractCurrentIndex()] || '';
-    }
-
-    function currentOptionId() {
-      const index = extractCurrentIndex();
-      const questionId = state.questionIds[index] || '';
-      return state.answers[questionId] || selectedOptionFromDom();
-    }
-
-    async function confirmCurrentBeforeMoving(button: HTMLButtonElement | null) {
-      const index = extractCurrentIndex();
-      const questionId = state.questionIds[index] || '';
-      const optionId = currentOptionId();
-
-      if (!questionId) {
-        showPanel('Please wait for the test to finish loading before moving to another question.', 'error');
-        return false;
-      }
-
-      if (!optionId) {
-        showPanel('Please select an answer for this question before moving to the next question.', 'error');
-        return false;
-      }
-
-      state.confirming = true;
-      const oldText = button?.textContent || '';
-      if (button) {
-        button.disabled = true;
-        button.textContent = 'Saving answer...';
-      }
-      const ok = await saveAnswer(questionId, optionId, index, false);
-      state.confirming = false;
-      if (button) {
-        button.disabled = false;
-        button.textContent = oldText;
-      }
-      return ok;
-    }
 
     window.fetch = async (input: any, init?: any) => {
       const url = requestUrl(input);
@@ -220,7 +138,6 @@ export default function RobustTestSubmitGuard() {
           state.answers = { ...state.answers, ...body.answers };
           delete state.answers.__resume;
         }
-        if (Number.isFinite(Number(body.currentQuestionIndex))) state.currentQuestionIndex = Math.max(0, Math.floor(Number(body.currentQuestionIndex)));
       }
 
       const response = await originalFetch(input, init);
@@ -230,11 +147,8 @@ export default function RobustTestSubmitGuard() {
           if (Array.isArray(json?.questions)) state.questionIds = json.questions.map((q: any) => String(q.id)).filter(Boolean);
           if (json?.session?.answers && typeof json.session.answers === 'object') {
             state.answers = { ...state.answers, ...json.session.answers };
-            state.confirmedAnswers = { ...state.confirmedAnswers, ...json.session.answers };
+            delete state.answers.__resume;
           }
-          if (Number.isFinite(Number(json?.session?.currentQuestionIndex))) state.currentQuestionIndex = Math.max(0, Math.floor(Number(json.session.currentQuestionIndex)));
-          delete state.answers.__resume;
-          delete state.confirmedAnswers.__resume;
         }).catch(() => null);
       }
 
@@ -247,12 +161,7 @@ export default function RobustTestSubmitGuard() {
       const optionId = (optionButton.querySelector('strong')?.textContent || '').replace('.', '').trim();
       const index = extractCurrentIndex();
       const questionId = state.questionIds[index];
-      if (questionId && optionId) {
-        state.currentQuestionIndex = index;
-        state.answers = { ...state.answers, [questionId]: optionId };
-        saveAnswer(questionId, optionId, index, true).catch(() => null);
-        showPanel('Answer selected. It will be confirmed before moving to the next question.', 'info');
-      }
+      if (questionId && optionId) state.answers = { ...state.answers, [questionId]: optionId };
     };
 
     const robustSubmit = async (button: HTMLButtonElement | null, force = false) => {
@@ -260,34 +169,29 @@ export default function RobustTestSubmitGuard() {
       state.submitting = true;
       state.startedAt = Date.now();
       setButtonState(button, true);
-      showPanel('Submitting your test securely. Please do not refresh or close this page.', 'info');
+
+      const currentIndex = extractCurrentIndex();
+      const currentQuestionId = state.questionIds[currentIndex];
+      const currentSelected = selectedOptionFromDom();
+      if (currentQuestionId && currentSelected) state.answers = { ...state.answers, [currentQuestionId]: currentSelected };
 
       const counter = answeredCounter();
       const allAnsweredByCounter = Boolean(counter && counter.total > 0 && counter.answered >= counter.total);
       const allAnsweredByState = state.questionIds.length > 0 && state.questionIds.every(id => state.answers[id]);
+
       if (!force && !allAnsweredByCounter && !allAnsweredByState) {
         state.submitting = false;
         setButtonState(button, false);
-        showPanel('Some questions are still unanswered. Please answer all questions before submitting.', 'error');
+        const missing = markMissingQuestions(state).slice(0, 20);
+        const suffix = missing.length ? ` Missing: ${missing.join(', ')}` : '';
+        showPanel(`Some questions are still unanswered. Please answer all questions before submitting.${suffix}`, 'error');
         return;
-      }
-
-      try {
-        if (Object.keys(state.answers).length) {
-          showPanel('Final confirmation of all saved answers...', 'info');
-          await fetchJsonWithTimeout('/api/session/answer', {
-            answers: state.answers,
-            currentQuestionIndex: extractCurrentIndex()
-          }, 12000).catch(() => null);
-        }
-      } catch {
-        // The final submit endpoint will still receive the answers below.
       }
 
       const payload = {
         force,
         clientFinalSubmit: true,
-        currentQuestionIndex: extractCurrentIndex(),
+        currentQuestionIndex: currentIndex,
         answers: state.answers
       };
 
@@ -324,39 +228,14 @@ export default function RobustTestSubmitGuard() {
     const onClickCapture = (event: MouseEvent) => {
       updateFromOptionClick(event);
       const button = (event.target as HTMLElement | null)?.closest('button') as HTMLButtonElement | null;
-      if (!button) return;
-
-      if (isTestSubmitButton(button)) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-        robustSubmit(button, false).catch(() => {
-          state.submitting = false;
-          setButtonState(button, false);
-          showPanel('Unexpected submission error. Tap Submit Test again. Do not refresh the page.', 'error');
-        });
-        return;
-      }
-
-      if (!isNavigationButton(button)) return;
-      const currentIndex = extractCurrentIndex();
-      const movingForward = isForwardNavigationButton(button, currentIndex);
-      const hasSelectedAnswer = Boolean(state.answers[currentQuestionId()] || selectedOptionFromDom());
-      if (!movingForward && !hasSelectedAnswer) return;
-      if (bypassNavigationRef.current) return;
-
+      if (!isTestSubmitButton(button)) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();
-
-      confirmCurrentBeforeMoving(button).then(ok => {
-        if (!ok) return;
-        bypassNavigationRef.current = true;
-        button.click();
-        window.setTimeout(() => { bypassNavigationRef.current = false; }, 0);
-      }).catch(() => {
-        state.confirming = false;
-        showPanel('Could not confirm this answer. Please try again before moving on.', 'error');
+      robustSubmit(button, false).catch(() => {
+        state.submitting = false;
+        setButtonState(button, false);
+        showPanel('Unexpected submission error. Tap Submit Test again. Do not refresh the page.', 'error');
       });
     };
 
