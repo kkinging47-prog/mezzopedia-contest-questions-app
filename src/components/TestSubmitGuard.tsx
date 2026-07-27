@@ -11,6 +11,8 @@ type AnalysisResult = {
   allAnsweredByCounter: boolean;
 };
 
+const ANSWER_CACHE_KEY = 'mezzopedia.test.answerCache.v1';
+
 function questionButtons() {
   return Array.from(document.querySelectorAll<HTMLButtonElement>('.question-nav button'))
     .filter(button => /^\d+$/.test((button.textContent || '').trim()));
@@ -178,12 +180,97 @@ function renderPrompt(result: AnalysisResult, shouldScroll = false) {
   if (shouldScroll) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
+function parseJsonBody(body: BodyInit | null | undefined) {
+  if (!body || typeof body !== 'string') return null;
+  try {
+    const parsed = JSON.parse(body);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function fetchUrl(input: RequestInfo | URL) {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  return input.url || '';
+}
+
+function loadCachedAnswers() {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(ANSWER_CACHE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCachedAnswers(answers: Record<string, string>) {
+  try { window.sessionStorage.setItem(ANSWER_CACHE_KEY, JSON.stringify(answers)); } catch { /* ignore private mode/storage errors */ }
+}
+
+function mergeAnswerPayload(target: Record<string, string>, payload: Record<string, unknown> | null) {
+  const incoming = payload?.answers;
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return;
+  for (const [questionId, optionId] of Object.entries(incoming as Record<string, unknown>)) {
+    if (questionId === '__resume') continue;
+    const value = String(optionId || '').trim();
+    if (questionId && value) target[String(questionId)] = value.slice(0, 12);
+  }
+  saveCachedAnswers(target);
+}
+
+function installSubmitFetchGuard() {
+  const originalFetch = window.fetch.bind(window);
+  const cachedAnswers = loadCachedAnswers();
+
+  const patchedFetch: typeof window.fetch = async (input, init) => {
+    const url = fetchUrl(input);
+    const payload = parseJsonBody(init?.body);
+
+    if (url.includes('/api/session/answer') || url.includes('/api/session/progress')) {
+      mergeAnswerPayload(cachedAnswers, payload);
+    }
+
+    let nextInit = init;
+    if (url.includes('/api/session/submit')) {
+      const submitPayload = payload ? { ...payload } : {};
+      const explicitAnswers = submitPayload.answers && typeof submitPayload.answers === 'object' && !Array.isArray(submitPayload.answers)
+        ? submitPayload.answers as Record<string, unknown>
+        : {};
+      const answersToSend = { ...cachedAnswers };
+      for (const [questionId, optionId] of Object.entries(explicitAnswers)) {
+        const value = String(optionId || '').trim();
+        if (questionId && value) answersToSend[questionId] = value.slice(0, 12);
+      }
+      submitPayload.answers = answersToSend;
+      nextInit = {
+        ...init,
+        headers: { ...((init?.headers || {}) as Record<string, string>), 'Content-Type': 'application/json' },
+        body: JSON.stringify(submitPayload)
+      };
+    }
+
+    const response = await originalFetch(input, nextInit);
+    if (url.includes('/api/session/submit') && response.ok) {
+      try { window.sessionStorage.removeItem(ANSWER_CACHE_KEY); } catch { /* ignore */ }
+    }
+    return response;
+  };
+
+  window.fetch = patchedFetch;
+  return () => {
+    if (window.fetch === patchedFetch) window.fetch = originalFetch;
+  };
+}
+
 export default function TestSubmitGuard() {
   const pathname = usePathname();
 
   useEffect(() => {
     if (pathname !== '/test') return;
     ensureStyle();
+    const restoreFetch = installSubmitFetchGuard();
 
     const refresh = () => window.setTimeout(() => {
       const existingPrompt = document.querySelector('[data-unanswered-guard="true"]');
@@ -225,6 +312,7 @@ export default function TestSubmitGuard() {
     refresh();
 
     return () => {
+      restoreFetch();
       document.removeEventListener('click', onClickCapture, true);
       observer.disconnect();
       questionButtons().forEach(button => button.classList.remove('unanswered-guard-mark'));
