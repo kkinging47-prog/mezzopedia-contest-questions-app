@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { requireAdmin, hashPassword } from '@/lib/auth';
+import { requireAdmin, hashParticipantPassword } from '@/lib/auth';
 import { DEFAULT_CATEGORIES } from '@/lib/constants';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage, safeText } from '@/lib/utils';
@@ -112,7 +112,7 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
   if ('paymentStatus' in body || 'payment_status' in body) payload.payment_status = normalizePaymentStatus(body.paymentStatus || body.payment_status);
   if ('contestStage' in body || 'contest_stage' in body) payload.contest_stage = normalizeContestStage(body.contestStage || body.contest_stage || 'Stage 1');
   if ('isActive' in body || 'is_active' in body) payload.is_active = body.isActive ?? body.is_active;
-  if (safeText(body.password)) payload.password_hash = await hashPassword(safeText(body.password));
+  if (safeText(body.password)) payload.password_hash = await hashParticipantPassword(safeText(body.password));
 
   const { error } = await supabaseAdmin.from('participants').update(payload).eq('id', id);
   if (error) return jsonError(error.message, 500);
