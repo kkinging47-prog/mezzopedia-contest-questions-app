@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { APP_NAME } from '@/lib/constants';
 import AdminQuickLinks from '@/components/AdminQuickLinks';
+import AssignPaidStageOneQuickAction from '@/components/AssignPaidStageOneQuickAction';
 import AutoRefreshOnUpdate from '@/components/AutoRefreshOnUpdate';
 import CursorSymbolInsertGuard from '@/components/CursorSymbolInsertGuard';
 import RobustTestSubmitGuard from '@/components/RobustTestSubmitGuard';
@@ -25,6 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         {children}
         <AdminQuickLinks />
+        <AssignPaidStageOneQuickAction />
         <AutoRefreshOnUpdate />
         <CursorSymbolInsertGuard />
         <RobustTestSubmitGuard />
