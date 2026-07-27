@@ -12,25 +12,26 @@ type SubmitState = {
 };
 
 function isTestSubmitButton(button: HTMLButtonElement | null) {
-  return Boolean(button && (button.textContent || '').trim().toLowerCase().includes('submit test'));
+  const label = (button?.textContent || '').trim().toLowerCase();
+  return Boolean(button && (label.includes('submit test') || label.includes('retry submit')));
 }
 
-function safeJsonParse(value: unknown) {
+function safeJsonParse(value: unknown): any {
   if (typeof value !== 'string') return null;
   try { return JSON.parse(value); } catch { return null; }
 }
 
-function requestUrl(input: RequestInfo | URL) {
+function requestUrl(input: any) {
   if (typeof input === 'string') return input;
-  if (input instanceof URL) return input.toString();
-  return input.url;
+  if (input && typeof input.url === 'string') return input.url;
+  return String(input || '');
 }
 
-function requestMethod(input: RequestInfo | URL, init?: RequestInit) {
-  return String(init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
+function requestMethod(input: any, init?: any) {
+  return String(init?.method || input?.method || 'GET').toUpperCase();
 }
 
-function initBody(init?: RequestInit) {
+function initBody(init?: any) {
   const body = init?.body;
   return typeof body === 'string' ? body : '';
 }
@@ -62,7 +63,7 @@ function ensurePanel() {
   let panel = card.querySelector<HTMLElement>('[data-robust-submit-panel="true"]');
   if (!panel) {
     panel = document.createElement('div');
-    panel.dataset.robustSubmitPanel = 'true';
+    panel.setAttribute('data-robust-submit-panel', 'true');
     panel.className = 'alert alert-info no-print';
     const actions = card.querySelector('.sticky-test-actions');
     if (actions) actions.insertAdjacentElement('beforebegin', panel);
@@ -105,7 +106,7 @@ async function fetchJsonWithTimeout(url: string, body: unknown, timeoutMs: numbe
 export default function RobustTestSubmitGuard() {
   const pathname = usePathname();
   const stateRef = useRef<SubmitState>({ questionIds: [], answers: {}, currentQuestionIndex: 0, submitting: false, startedAt: 0 });
-  const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const originalFetchRef = useRef<any>(null);
 
   useEffect(() => {
     if (pathname !== '/test') return;
@@ -115,7 +116,7 @@ export default function RobustTestSubmitGuard() {
     const originalFetch = window.fetch.bind(window);
     originalFetchRef.current = originalFetch;
 
-    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    window.fetch = async (input: any, init?: any) => {
       const url = requestUrl(input);
       const method = requestMethod(input, init);
       const body = safeJsonParse(initBody(init));
@@ -123,6 +124,7 @@ export default function RobustTestSubmitGuard() {
       if (method === 'POST' && body && (url.includes('/api/session/answer') || url.includes('/api/session/progress'))) {
         if (body.answers && typeof body.answers === 'object') {
           state.answers = { ...state.answers, ...body.answers };
+          delete state.answers.__resume;
         }
         if (Number.isFinite(Number(body.currentQuestionIndex))) state.currentQuestionIndex = Math.max(0, Math.floor(Number(body.currentQuestionIndex)));
       }
@@ -130,7 +132,7 @@ export default function RobustTestSubmitGuard() {
       const response = await originalFetch(input, init);
 
       if (method === 'GET' && url.includes('/api/session')) {
-        response.clone().json().then(json => {
+        response.clone().json().then((json: any) => {
           if (Array.isArray(json?.questions)) state.questionIds = json.questions.map((q: any) => String(q.id)).filter(Boolean);
           if (json?.session?.answers && typeof json.session.answers === 'object') state.answers = { ...state.answers, ...json.session.answers };
           if (Number.isFinite(Number(json?.session?.currentQuestionIndex))) state.currentQuestionIndex = Math.max(0, Math.floor(Number(json.session.currentQuestionIndex)));
@@ -142,7 +144,7 @@ export default function RobustTestSubmitGuard() {
     };
 
     const updateFromOptionClick = (event: MouseEvent) => {
-      const optionButton = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>('button.option');
+      const optionButton = (event.target as HTMLElement | null)?.closest('button.option') as HTMLButtonElement | null;
       if (!optionButton) return;
       const optionId = (optionButton.querySelector('strong')?.textContent || '').replace('.', '').trim();
       const index = extractCurrentIndex();
@@ -209,7 +211,7 @@ export default function RobustTestSubmitGuard() {
 
     const onClickCapture = (event: MouseEvent) => {
       updateFromOptionClick(event);
-      const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>('button');
+      const button = (event.target as HTMLElement | null)?.closest('button') as HTMLButtonElement | null;
       if (!isTestSubmitButton(button)) return;
       event.preventDefault();
       event.stopPropagation();
