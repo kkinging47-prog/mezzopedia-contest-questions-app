@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { requireAdmin, hashPassword } from '@/lib/auth';
+import { requireAdmin, hashParticipantPassword } from '@/lib/auth';
 import { DEFAULT_CATEGORIES } from '@/lib/constants';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage, safeText } from '@/lib/utils';
@@ -114,7 +114,7 @@ async function buildParticipantRow(clean: CleanParticipant) {
     category: clean.category,
     name: clean.name,
     usercode: clean.usercode,
-    password_hash: await hashPassword(clean.password),
+    password_hash: await hashParticipantPassword(clean.password),
     payment_status: clean.paymentStatus,
     contest_stage: clean.contestStage,
     is_active: clean.isActive,
@@ -258,13 +258,10 @@ export async function POST(request: NextRequest) {
 
     const row = await buildParticipantRow(clean);
     const { data, error } = await supabaseAdmin.from('participants').insert(row).select('id,name,usercode,category,payment_status,contest_stage,is_active').single();
-    if (error) {
-      const duplicate = error.message?.toLowerCase?.().includes('duplicate') || error.code === '23505';
-      return jsonError(duplicate ? 'This usercode already exists. Search for the existing participant and edit/update that record.' : error.message, duplicate ? 409 : 500);
-    }
+    if (error) return jsonError(error.message, 500);
     return Response.json({ success: true, participant: data });
   } catch (error) {
     console.error('Participants POST failed:', error);
-    return jsonError('Could not save participant because the server could not reach Supabase or the request timed out. Try saving fewer records at a time, confirm Vercel environment variables, then redeploy.', 500);
+    return jsonError('Could not save participant. Check Supabase environment variables and table schema.', 500);
   }
 }
