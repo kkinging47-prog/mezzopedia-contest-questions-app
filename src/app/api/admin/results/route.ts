@@ -37,15 +37,18 @@ function officialAttemptCompare(a: RankedResult, b: RankedResult) {
   const bSubmitted = submittedTime(b.submittedAt) > 0;
   if (aSubmitted !== bSubmitted) return aSubmitted ? -1 : 1;
 
+  // If a candidate is allowed to retake a stage, the older completed attempt is
+  // archived as expired. After the retake, prefer the new completed result over
+  // the archived result, even if the archived score was higher.
+  const aCompleted = a.status === 'completed';
+  const bCompleted = b.status === 'completed';
+  if (aCompleted !== bCompleted) return aCompleted ? -1 : 1;
+
   const scoreDiff = b.score - a.score;
   if (scoreDiff) return scoreDiff;
 
   const timeDiff = a.timeUsedSeconds - b.timeUsedSeconds;
   if (timeDiff) return timeDiff;
-
-  const aCompleted = a.status === 'completed';
-  const bCompleted = b.status === 'completed';
-  if (aCompleted !== bCompleted) return aCompleted ? -1 : 1;
 
   return submittedTime(b.submittedAt) - submittedTime(a.submittedAt);
 }
@@ -118,6 +121,6 @@ export async function GET(request: NextRequest) {
     allSessionCount: allResults.length,
     duplicateAttemptCount,
     defaultOrder: 'highest_score_then_least_time',
-    dedupeRule: 'One official row is shown per participant per completed stage. Extra saved attempts are counted but hidden from ranking.'
+    dedupeRule: 'One official row is shown per participant per completed stage. Retake results marked completed are preferred over older archived results.'
   });
 }
