@@ -216,6 +216,25 @@ export default function ParticipantsManagerPage() {
     loadParticipants();
   }
 
+  async function allowRetake(participant: Participant) {
+    const stage = participant.contest_stage || FINAL_TRIAL_STAGE;
+    const ok = confirm(`Allow ${participant.name} (${participant.usercode}) to retake ${stage}?\n\nThis will archive any completed or unfinished session for ${stage}, reopen the code, reset the login count, and keep the old result for admin history.`);
+    if (!ok) return;
+    setError('');
+    setMessage('');
+    setLoading(true);
+    const res = await fetch(`/api/admin/participants/${participant.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ retakeStage: stage })
+    });
+    const json = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) { setError(json.error || 'Could not reopen this stage for retake.'); return; }
+    setMessage(`${participant.name} can now retake ${json.stage || stage}. Archived ${json.archivedSessionCount || 0} previous session(s).`);
+    loadParticipants();
+  }
+
   if (error && !ready && !loading) {
     return <main className="math-bg centered"><div className="card card-pad"><div className="alert alert-error">{error}</div><a className="btn btn-primary" href="/admin">Back to Admin</a></div></main>;
   }
@@ -240,7 +259,7 @@ export default function ParticipantsManagerPage() {
           <div>
             <span className="badge">Search and edit participants</span>
             <h1 style={{ marginTop: 12 }}>Manage participant records</h1>
-            <p className="muted">Search by name or code, edit category, payment status, assigned stage, access and password. New codes are checked for duplicates before saving.</p>
+            <p className="muted">Search by name or code, edit category, payment status, assigned stage, access and password. Use Retake Stage when a completed candidate must write the same stage again.</p>
           </div>
 
           <form className="grid grid-3" onSubmit={addParticipant} autoComplete="off">
@@ -285,6 +304,7 @@ export default function ParticipantsManagerPage() {
         </section>}
 
         <section className="card card-pad" style={{ marginTop: 18 }}>
+          <div className="alert alert-info no-print">To let a completed candidate write the same stage again, search for the candidate and click <strong>Retake Stage</strong>. This reopens only the candidate's currently assigned stage.</div>
           {loading && <div className="alert alert-info">Working...</div>}
           {!loading && !filteredParticipants.length && <div className="alert alert-info">No participant matched your filter.</div>}
           {!!filteredParticipants.length && <div className="table-wrap"><table>
@@ -298,7 +318,7 @@ export default function ParticipantsManagerPage() {
               <td>{participant.is_active ? 'Open' : 'Closed'}</td>
               <td>{participant.login_count || 0}</td>
               <td>{participant.last_login_at ? new Date(participant.last_login_at).toLocaleString() : ''}</td>
-              <td><div className="flex wrap no-print"><button className="btn btn-primary" onClick={() => startEdit(participant)}>Edit</button><button className="btn btn-danger" onClick={() => deleteParticipant(participant)}>Delete</button></div></td>
+              <td><div className="flex wrap no-print"><button className="btn btn-primary" onClick={() => startEdit(participant)}>Edit</button><button className="btn btn-light" onClick={() => allowRetake(participant)}>Retake Stage</button><button className="btn btn-danger" onClick={() => deleteParticipant(participant)}>Delete</button></div></td>
             </tr>)}</tbody>
           </table></div>}
         </section>
