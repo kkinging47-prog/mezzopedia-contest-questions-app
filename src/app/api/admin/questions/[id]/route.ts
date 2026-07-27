@@ -19,6 +19,79 @@ function validateOptions(cleanOptions: Array<{ id: string; text: string; imageUr
   return '';
 }
 
+function cleanPublicAnswers(raw: unknown) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  const clean: Record<string, string> = {};
+  for (const [questionId, selected] of Object.entries(source)) {
+    if (questionId === '__resume') continue;
+    const optionId = String(selected || '').trim();
+    if (optionId) clean[String(questionId)] = optionId;
+  }
+  return clean;
+}
+
+async function recalculateSubmittedScoresForQuestion(questionId: string) {
+  const { data: sessions, error: sessionError } = await supabaseAdmin
+    .from('contest_sessions')
+    .select('id,question_order,answers,status,submitted_at')
+    .in('status', ['completed', 'expired'])
+    .not('submitted_at', 'is', null)
+    .contains('question_order', [questionId]);
+
+  if (sessionError) return { affectedSessions: 0, updatedSessions: 0, error: sessionError.message };
+  const rows = (sessions || []) as any[];
+  if (!rows.length) return { affectedSessions: 0, updatedSessions: 0, error: '' };
+
+  const allQuestionIds = Array.from(new Set(rows.flatMap(row => Array.isArray(row.question_order) ? row.question_order.map(String) : []))).filter(Boolean);
+  if (!allQuestionIds.length) return { affectedSessions: rows.length, updatedSessions: 0, error: '' };
+
+  const { data: questions, error: questionError } = await supabaseAdmin
+    .from('questions')
+    .select('id,correct_option_id,points')
+    .in('id', allQuestionIds);
+  if (questionError) return { affectedSessions: rows.length, updatedSessions: 0, error: questionError.message };
+
+  const questionMap = new Map((questions || []).map((question: any) => [String(question.id), question]));
+  const now = new Date().toISOString();
+  let updatedSessions = 0;
+
+  for (const session of rows) {
+    const questionIds = Array.isArray(session.question_order) ? session.question_order.map(String).filter(Boolean) : [];
+    const answers = cleanPublicAnswers(session.answers);
+    let score = 0;
+    let maxScore = 0;
+    const breakdown: Record<string, { selected?: string; correct: string; isCorrect: boolean; points: number }> = {};
+
+    for (const id of questionIds) {
+      const question = questionMap.get(id);
+      if (!question) continue;
+      const points = Number(question.points || 1);
+      const selected = answers[id];
+      const correct = String(question.correct_option_id || '');
+      const isCorrect = String(selected || '') === correct;
+      maxScore += points;
+      if (isCorrect) score += points;
+      breakdown[id] = { selected, correct, isCorrect, points };
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from('contest_sessions')
+      .update({
+        score,
+        max_score: maxScore,
+        total_questions: questionIds.length,
+        answers,
+        answer_breakdown: breakdown,
+        updated_at: now
+      })
+      .eq('id', session.id);
+
+    if (!updateError) updatedSessions += 1;
+  }
+
+  return { affectedSessions: rows.length, updatedSessions, error: '' };
+}
+
 export async function PUT(request: NextRequest, context: { params: Promise<{ id: string }> }) {
   const admin = await requireAdmin(request);
   if (!admin) return jsonError('Unauthorized.', 401);
@@ -43,9 +116,37 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
   if ('isActive' in body || 'is_active' in body) payload.is_active = body.isActive ?? body.is_active;
   payload.updated_at = new Date().toISOString();
 
+  const scoreAffectingChange = 'correctOptionId' in body || 'correct_option_id' in body || 'points' in body;
+
   const { error } = await supabaseAdmin.from('questions').update(payload).eq('id', id);
   if (error) return jsonError(error.message, 500);
-  return Response.json({ success: true });
+
+  const recalculation = scoreAffectingChange
+    ? await recalculateSubmittedScoresForQuestion(id)
+    : { affectedSessions: 0, updatedSessions: 0, error: '' };
+
+  if (scoreAffectingChange) {
+    await supabaseAdmin.from('admin_audit_logs').insert({
+      action: 'QUESTION_SCORE_RECALCULATION',
+      entity_type: 'question',
+      entity_id: id,
+      details: {
+        questionId: id,
+        affectedSessions: recalculation.affectedSessions,
+        updatedSessions: recalculation.updatedSessions,
+        recalculationError: recalculation.error || '',
+        note: 'Question answer key/points were edited; submitted scores containing this question were recalculated.'
+      }
+    }).then(() => null);
+  }
+
+  return Response.json({
+    success: true,
+    scoreRecalculated: scoreAffectingChange,
+    affectedSessions: recalculation.affectedSessions,
+    recalculatedSessions: recalculation.updatedSessions,
+    recalculationWarning: recalculation.error || ''
+  });
 }
 
 export async function DELETE(request: NextRequest, context: { params: Promise<{ id: string }> }) {
