@@ -173,6 +173,58 @@ export async function POST(request: NextRequest) {
     return Response.json({ success: true, assignedCount: participantIds.length, activePhase: FINAL_TRIAL_STAGE, stageSettings: nextSettings });
   }
 
+  if (action === 'assignPaidToStage1') {
+    const { activePhase, stageSettings } = await readStageConfig();
+    const nextSettings = normalizeStageSettings(stageSettings);
+    nextSettings['Stage 1'] = { ...nextSettings['Stage 1'], isOpen: true, updatedAt: now, note: 'Stage 1 is open for paid candidates assigned directly from the admin stage tools.' };
+    const error = await writeStageConfig('Stage 1', nextSettings);
+    if (error) return jsonError(error.message, 500);
+
+    const { data: paidParticipants, error: paidReadError } = await supabaseAdmin
+      .from('participants')
+      .select('id')
+      .eq('payment_status', 'paid');
+    if (paidReadError) return jsonError(paidReadError.message, 500);
+
+    const paidIds = (paidParticipants || []).map((row: any) => row.id).filter(Boolean);
+    if (!paidIds.length) return Response.json({ success: true, assignedCount: 0, paidCount: 0, skippedStage1CompletedCount: 0, skippedStage1InProgressCount: 0, activePhase: 'Stage 1', stageSettings: nextSettings });
+
+    const { data: stage1Sessions, error: stage1SessionError } = await supabaseAdmin
+      .from('contest_sessions')
+      .select('participant_id,status,contest_stage')
+      .in('participant_id', paidIds)
+      .eq('contest_stage', 'Stage 1')
+      .in('status', ['completed', 'in_progress']);
+    if (stage1SessionError) return jsonError(stage1SessionError.message, 500);
+
+    const completedStage1Ids = new Set((stage1Sessions || []).filter((row: any) => row.status === 'completed').map((row: any) => row.participant_id));
+    const inProgressStage1Ids = new Set((stage1Sessions || []).filter((row: any) => row.status === 'in_progress').map((row: any) => row.participant_id));
+    const assignIds = paidIds.filter((id: string) => !completedStage1Ids.has(id) && !inProgressStage1Ids.has(id));
+
+    if (assignIds.length) {
+      const { error: participantError } = await supabaseAdmin
+        .from('participants')
+        .update({ contest_stage: 'Stage 1', is_active: true, login_count: 0, last_login_at: null, updated_at: now })
+        .in('id', assignIds);
+      if (participantError) return jsonError(participantError.message, 500);
+
+      await supabaseAdmin
+        .from('contest_sessions')
+        .update({ status: 'cancelled', active_login_token: null, active_user_agent: null, last_reauth_at: null, updated_at: now, proctoring_summary: { cancelledForPaidStage1Assignment: true } })
+        .in('participant_id', assignIds)
+        .eq('status', 'in_progress')
+        .neq('contest_stage', 'Stage 1')
+        .then(() => null);
+    }
+
+    if (inProgressStage1Ids.size) {
+      await supabaseAdmin.from('participants').update({ contest_stage: 'Stage 1', is_active: true, updated_at: now }).in('id', Array.from(inProgressStage1Ids)).then(() => null);
+    }
+
+    await supabaseAdmin.from('admin_audit_logs').insert({ action: 'ASSIGN_PAID_TO_STAGE_1', entity_type: 'participant', details: { assignedCount: assignIds.length, paidCount: paidIds.length, skippedStage1CompletedCount: completedStage1Ids.size, skippedStage1InProgressCount: inProgressStage1Ids.size, previousActivePhase: activePhase, note: 'Paid candidates without a completed or active Stage 1 session were moved to Stage 1 and opened. Other in-progress stages were cancelled so they can begin Stage 1.' } }).then(() => null);
+    return Response.json({ success: true, assignedCount: assignIds.length, paidCount: paidIds.length, skippedStage1CompletedCount: completedStage1Ids.size, skippedStage1InProgressCount: inProgressStage1Ids.size, activePhase: 'Stage 1', stageSettings: nextSettings });
+  }
+
   if (action === 'updateStageSchedule') {
     const stage = normalizeStage(body.stage);
     const startsAt = cleanScheduleDate(body.startsAt);
