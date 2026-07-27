@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
 
 type SubmitState = {
+  sessionId: string;
   questionIds: string[];
   answers: Record<string, string>;
   submitting: boolean;
@@ -61,6 +62,27 @@ function selectedOptionFromDom() {
   return (selected?.querySelector('strong')?.textContent || '').replace('.', '').trim();
 }
 
+function storageKey(sessionId: string) {
+  return sessionId ? `mezzopedia-final-answers-${sessionId}` : '';
+}
+
+function readStoredAnswers(sessionId: string) {
+  const key = storageKey(sessionId);
+  if (!key || typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredAnswers(sessionId: string, answers: Record<string, string>) {
+  const key = storageKey(sessionId);
+  if (!key || typeof window === 'undefined') return;
+  try { window.localStorage.setItem(key, JSON.stringify(answers)); } catch { /* ignore */ }
+}
+
 function ensurePanel() {
   const card = document.querySelector<HTMLElement>('.card.card-pad');
   if (!card) return null;
@@ -89,11 +111,11 @@ function setButtonState(button: HTMLButtonElement | null, submitting: boolean) {
   button.textContent = submitting ? 'Submitting... Please wait' : 'Submit Test';
 }
 
-async function fetchJsonWithTimeout(url: string, body: unknown, timeoutMs: number) {
+async function fetchJsonWithTimeout(fetcher: typeof window.fetch, url: string, body: unknown, timeoutMs: number) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
+    const response = await fetcher(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -107,7 +129,7 @@ async function fetchJsonWithTimeout(url: string, body: unknown, timeoutMs: numbe
   }
 }
 
-function markMissingQuestions(state: SubmitState) {
+function missingQuestionNumbers(state: SubmitState) {
   const missing: number[] = [];
   state.questionIds.forEach((id, index) => {
     if (!state.answers[id]) missing.push(index + 1);
@@ -117,7 +139,7 @@ function markMissingQuestions(state: SubmitState) {
 
 export default function RobustTestSubmitGuard() {
   const pathname = usePathname();
-  const stateRef = useRef<SubmitState>({ questionIds: [], answers: {}, submitting: false, startedAt: 0 });
+  const stateRef = useRef<SubmitState>({ sessionId: '', questionIds: [], answers: {}, submitting: false, startedAt: 0 });
   const originalFetchRef = useRef<any>(null);
 
   useEffect(() => {
@@ -128,27 +150,51 @@ export default function RobustTestSubmitGuard() {
     const originalFetch = window.fetch.bind(window);
     originalFetchRef.current = originalFetch;
 
+    function mergeAnswers(next: Record<string, unknown>) {
+      const clean: Record<string, string> = {};
+      for (const [questionId, optionId] of Object.entries(next || {})) {
+        if (questionId === '__resume') continue;
+        const value = String(optionId || '').trim();
+        if (questionId && value) clean[questionId] = value;
+      }
+      state.answers = { ...state.answers, ...clean };
+      if (state.sessionId) writeStoredAnswers(state.sessionId, state.answers);
+    }
+
+    async function loadSessionSnapshot() {
+      try {
+        const response = await originalFetch('/api/session', { cache: 'no-store' });
+        const json = await response.clone().json().catch(() => ({}));
+        if (!response.ok) return;
+        if (json?.session?.id) state.sessionId = String(json.session.id);
+        if (Array.isArray(json?.questions)) state.questionIds = json.questions.map((q: any) => String(q.id)).filter(Boolean);
+        if (state.sessionId) state.answers = { ...state.answers, ...readStoredAnswers(state.sessionId) };
+        if (json?.session?.answers && typeof json.session.answers === 'object') mergeAnswers(json.session.answers);
+      } catch {
+        // The normal test page will show any real loading error. This helper should stay quiet.
+      }
+    }
+
+    loadSessionSnapshot();
+    const delayedLoad = window.setTimeout(loadSessionSnapshot, 1500);
+
     window.fetch = async (input: any, init?: any) => {
       const url = requestUrl(input);
       const method = requestMethod(input, init);
       const body = safeJsonParse(initBody(init));
 
       if (method === 'POST' && body && (url.includes('/api/session/answer') || url.includes('/api/session/progress'))) {
-        if (body.answers && typeof body.answers === 'object') {
-          state.answers = { ...state.answers, ...body.answers };
-          delete state.answers.__resume;
-        }
+        if (body.answers && typeof body.answers === 'object') mergeAnswers(body.answers);
       }
 
       const response = await originalFetch(input, init);
 
       if (method === 'GET' && url.includes('/api/session')) {
         response.clone().json().then((json: any) => {
+          if (json?.session?.id) state.sessionId = String(json.session.id);
           if (Array.isArray(json?.questions)) state.questionIds = json.questions.map((q: any) => String(q.id)).filter(Boolean);
-          if (json?.session?.answers && typeof json.session.answers === 'object') {
-            state.answers = { ...state.answers, ...json.session.answers };
-            delete state.answers.__resume;
-          }
+          if (state.sessionId) state.answers = { ...state.answers, ...readStoredAnswers(state.sessionId) };
+          if (json?.session?.answers && typeof json.session.answers === 'object') mergeAnswers(json.session.answers);
         }).catch(() => null);
       }
 
@@ -161,7 +207,11 @@ export default function RobustTestSubmitGuard() {
       const optionId = (optionButton.querySelector('strong')?.textContent || '').replace('.', '').trim();
       const index = extractCurrentIndex();
       const questionId = state.questionIds[index];
-      if (questionId && optionId) state.answers = { ...state.answers, [questionId]: optionId };
+      if (questionId && optionId) mergeAnswers({ [questionId]: optionId });
+      else loadSessionSnapshot().then(() => {
+        const refreshedQuestionId = state.questionIds[extractCurrentIndex()];
+        if (refreshedQuestionId && optionId) mergeAnswers({ [refreshedQuestionId]: optionId });
+      });
     };
 
     const robustSubmit = async (button: HTMLButtonElement | null, force = false) => {
@@ -170,10 +220,12 @@ export default function RobustTestSubmitGuard() {
       state.startedAt = Date.now();
       setButtonState(button, true);
 
+      if (!state.questionIds.length) await loadSessionSnapshot();
+
       const currentIndex = extractCurrentIndex();
       const currentQuestionId = state.questionIds[currentIndex];
       const currentSelected = selectedOptionFromDom();
-      if (currentQuestionId && currentSelected) state.answers = { ...state.answers, [currentQuestionId]: currentSelected };
+      if (currentQuestionId && currentSelected) mergeAnswers({ [currentQuestionId]: currentSelected });
 
       const counter = answeredCounter();
       const allAnsweredByCounter = Boolean(counter && counter.total > 0 && counter.answered >= counter.total);
@@ -182,7 +234,7 @@ export default function RobustTestSubmitGuard() {
       if (!force && !allAnsweredByCounter && !allAnsweredByState) {
         state.submitting = false;
         setButtonState(button, false);
-        const missing = markMissingQuestions(state).slice(0, 20);
+        const missing = missingQuestionNumbers(state).slice(0, 20);
         const suffix = missing.length ? ` Missing: ${missing.join(', ')}` : '';
         showPanel(`Some questions are still unanswered. Please answer all questions before submitting.${suffix}`, 'error');
         return;
@@ -191,6 +243,8 @@ export default function RobustTestSubmitGuard() {
       const payload = {
         force,
         clientFinalSubmit: true,
+        clientAnsweredCount: counter?.answered || Object.keys(state.answers).length,
+        clientTotalQuestions: counter?.total || state.questionIds.length,
         currentQuestionIndex: currentIndex,
         answers: state.answers
       };
@@ -199,8 +253,11 @@ export default function RobustTestSubmitGuard() {
       for (let attempt = 1; attempt <= 2; attempt += 1) {
         try {
           showPanel(attempt === 1 ? 'Submitting your test securely...' : 'Network was slow. Retrying submission now...', 'info');
-          const { response, json } = await fetchJsonWithTimeout('/api/session/submit', payload, 26000);
+          const { response, json } = await fetchJsonWithTimeout(originalFetch, '/api/session/submit', payload, 26000);
           if (response.ok || json?.success) {
+            if (state.sessionId) {
+              try { window.localStorage.removeItem(storageKey(state.sessionId)); } catch { /* ignore */ }
+            }
             showPanel('Submission received. Opening results...', 'success');
             window.location.assign('/results');
             return;
@@ -215,14 +272,14 @@ export default function RobustTestSubmitGuard() {
           if (response.status === 400) break;
         } catch (error: any) {
           lastMessage = error?.name === 'AbortError'
-            ? 'The submission request took too long. Please try again. If it was already received, the Results page will open after retry.'
-            : 'Network issue while submitting. Please try again.';
+            ? 'The submission request took too long. Please tap Submit Test again.'
+            : 'Network issue while submitting. Please tap Submit Test again.';
         }
       }
 
       state.submitting = false;
       setButtonState(button, false);
-      showPanel(`${lastMessage} Tap Submit Test again. Do not refresh the page.`, 'error');
+      showPanel(`${lastMessage} Do not close the page.`, 'error');
     };
 
     const onClickCapture = (event: MouseEvent) => {
@@ -235,7 +292,7 @@ export default function RobustTestSubmitGuard() {
       robustSubmit(button, false).catch(() => {
         state.submitting = false;
         setButtonState(button, false);
-        showPanel('Unexpected submission error. Tap Submit Test again. Do not refresh the page.', 'error');
+        showPanel('Unexpected submission error. Tap Submit Test again. Do not close the page.', 'error');
       });
     };
 
@@ -247,7 +304,7 @@ export default function RobustTestSubmitGuard() {
           state.submitting = false;
           button.disabled = false;
           button.textContent = 'Retry Submit';
-          showPanel('Submission is taking too long. Tap Retry Submit once. Do not refresh the page.', 'error');
+          showPanel('Submission is taking too long. Tap Retry Submit once. Do not close the page.', 'error');
         }
       }
     }, 5000);
@@ -257,6 +314,7 @@ export default function RobustTestSubmitGuard() {
     return () => {
       document.removeEventListener('click', onClickCapture, true);
       window.clearInterval(watchdog);
+      window.clearTimeout(delayedLoad);
       if (originalFetchRef.current) window.fetch = originalFetchRef.current;
     };
   }, [pathname]);
