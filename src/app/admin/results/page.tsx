@@ -51,15 +51,47 @@ function canPromote(result: Result, targetStage: string) {
   return result.status === 'completed' && stageIndex(targetStage) > stageIndex(result.sessionStage || 'Stage 1');
 }
 
-function rankResults(results: Result[], category: string, stage: string) {
+function dateStartMs(value: string) {
+  if (!value) return null;
+  const ms = new Date(`${value}T00:00:00`).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function dateEndMs(value: string) {
+  if (!value) return null;
+  const ms = new Date(`${value}T23:59:59.999`).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function isWithinDateRange(result: Result, dateFrom: string, dateTo: string) {
+  if (!dateFrom && !dateTo) return true;
+  if (!result.submittedAt) return false;
+  const submitted = new Date(result.submittedAt).getTime();
+  if (!Number.isFinite(submitted)) return false;
+  const start = dateStartMs(dateFrom);
+  const end = dateEndMs(dateTo);
+  if (start !== null && submitted < start) return false;
+  if (end !== null && submitted > end) return false;
+  return true;
+}
+
+function rankResults(results: Result[], category: string, stage: string, dateFrom: string, dateTo: string) {
   const filtered = results
     .filter(result => category === 'All' || result.category === category)
-    .filter(result => stage === 'All' || result.sessionStage === stage);
+    .filter(result => stage === 'All' || result.sessionStage === stage)
+    .filter(result => isWithinDateRange(result, dateFrom, dateTo));
   return filtered.sort((a, b) => b.score - a.score || a.timeUsedSeconds - b.timeUsedSeconds || a.name.localeCompare(b.name));
 }
 
 function fileSafe(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'all';
+}
+
+function dateFilterLabel(dateFrom: string, dateTo: string) {
+  if (!dateFrom && !dateTo) return 'All dates';
+  if (dateFrom && dateTo) return `${dateFrom} to ${dateTo}`;
+  if (dateFrom) return `From ${dateFrom}`;
+  return `Up to ${dateTo}`;
 }
 
 export default function AdminResultsPage() {
@@ -70,14 +102,17 @@ export default function AdminResultsPage() {
   const [message, setMessage] = useState('');
   const [category, setCategory] = useState('All');
   const [stage, setStage] = useState('All');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [targetStage, setTargetStage] = useState('Stage 1');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [results, setResults] = useState<Result[]>([]);
   const [stats, setStats] = useState<ResultStats>({ allSessionCount: 0, duplicateAttemptCount: 0 });
 
-  const rankedResults = useMemo(() => rankResults(results, category, stage), [results, category, stage]);
+  const rankedResults = useMemo(() => rankResults(results, category, stage, dateFrom, dateTo), [results, category, stage, dateFrom, dateTo]);
   const eligibleResults = useMemo(() => rankedResults.filter(result => canPromote(result, targetStage)), [rankedResults, targetStage]);
   const selectedResults = useMemo(() => results.filter(result => selectedIds.includes(result.id)), [results, selectedIds]);
+  const activeFilterLabel = `${category === 'All' ? 'All categories' : category} / ${stage === 'All' ? 'All stages' : stage} / ${dateFilterLabel(dateFrom, dateTo)}`;
 
   useEffect(() => {
     fetch('/api/admin/me').then(res => {
@@ -93,6 +128,11 @@ export default function AdminResultsPage() {
   useEffect(() => {
     setSelectedIds(prev => prev.filter(id => rankedResults.some(result => result.id === id && canPromote(result, targetStage))));
   }, [rankedResults, targetStage]);
+
+  function clearDateFilter() {
+    setDateFrom('');
+    setDateTo('');
+  }
 
   async function loadResults() {
     setLoading(true);
@@ -130,7 +170,7 @@ export default function AdminResultsPage() {
     const sheet = XLSX.utils.json_to_sheet(rows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, sheet, 'Ranked Results');
-    XLSX.writeFile(workbook, `mezzopedia-ranked-results-${fileSafe(category)}-${fileSafe(stage)}.xlsx`);
+    XLSX.writeFile(workbook, `mezzopedia-ranked-results-${fileSafe(category)}-${fileSafe(stage)}-${fileSafe(dateFilterLabel(dateFrom, dateTo))}.xlsx`);
   }
 
   function toggleSelected(id: string) {
@@ -197,11 +237,11 @@ export default function AdminResultsPage() {
           <div>
             <span className="badge">Official ranking order</span>
             <h1 style={{ marginTop: 12 }}>Results ranked by highest score, then least time</h1>
-            <p className="muted">The default order is always: highest score first. If scores are tied, the candidate who used the least time comes first. The submission date is recorded because stages may remain open for more than one day.</p>
+            <p className="muted">Use the filters below to view results by category, completed stage, or submission date/date range. The default order is always highest score first; if scores are tied, the candidate who used the least time comes first.</p>
             <div className="alert alert-info">Duplicate-looking rows happen when one candidate has more than one saved session/result. The results page now shows only one official row per participant per completed stage, while counting hidden duplicate attempts for review.</div>
           </div>
 
-          <div className="grid grid-3 no-print">
+          <div className="grid grid-4 no-print">
             <label>
               <span className="label">Filter by Category</span>
               <select className="select" value={category} onChange={e => setCategory(e.target.value)}>
@@ -209,10 +249,18 @@ export default function AdminResultsPage() {
               </select>
             </label>
             <label>
-              <span className="label">Completed Stage</span>
+              <span className="label">Filter by Completed Stage</span>
               <select className="select" value={stage} onChange={e => setStage(e.target.value)}>
                 {['All', ...CONTEST_STAGES].map(item => <option key={item}>{item}</option>)}
               </select>
+            </label>
+            <label>
+              <span className="label">Submission Date From</span>
+              <input className="input" type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+            </label>
+            <label>
+              <span className="label">Submission Date To</span>
+              <input className="input" type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} />
             </label>
             <label>
               <span className="label">Promote Selected To</span>
@@ -220,7 +268,12 @@ export default function AdminResultsPage() {
                 {MAIN_CONTEST_STAGES.map(item => <option key={item}>{item}</option>)}
               </select>
             </label>
+            <div className="flex wrap" style={{ alignSelf: 'end' }}>
+              <button className="btn btn-light" onClick={clearDateFilter} disabled={!dateFrom && !dateTo}>Clear Date</button>
+            </div>
           </div>
+
+          <div className="alert alert-info no-print"><strong>Active filter:</strong> {activeFilterLabel}</div>
 
           <div className="grid grid-4">
             <Metric title="Official Results" value={String(results.length)} />
