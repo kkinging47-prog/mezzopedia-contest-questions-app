@@ -19,11 +19,12 @@ export type CertificateRecipient = {
   name: string;
   category: string;
   usercode?: string;
+  certificateDate?: string;
 };
 
 export const DEFAULT_CERTIFICATE_SETTINGS: Required<CertificateSettings> = {
   templateUrl: '',
-  certificateDate: '2026-12-01',
+  certificateDate: '',
   nameX: 148,
   nameY: 92,
   categoryX: 148,
@@ -40,6 +41,7 @@ export function normalizeCertificateSettings(value?: CertificateSettings | null)
   return {
     ...DEFAULT_CERTIFICATE_SETTINGS,
     ...(value || {}),
+    certificateDate: String(value?.certificateDate || DEFAULT_CERTIFICATE_SETTINGS.certificateDate || ''),
     nameX: Number(value?.nameX || DEFAULT_CERTIFICATE_SETTINGS.nameX),
     nameY: Number(value?.nameY || DEFAULT_CERTIFICATE_SETTINGS.nameY),
     categoryX: Number(value?.categoryX || DEFAULT_CERTIFICATE_SETTINGS.categoryX),
@@ -101,6 +103,7 @@ function drawDateInTemplateSpaces(doc: jsPDF, dateValue: string, centerX: number
 
 export async function createCertificatePdf(recipient: CertificateRecipient, rawSettings?: CertificateSettings | null) {
   const settings = normalizeCertificateSettings(rawSettings);
+  const certificateDate = recipient.certificateDate || settings.certificateDate;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
 
   if (settings.templateUrl) {
@@ -126,7 +129,7 @@ export async function createCertificatePdf(recipient: CertificateRecipient, rawS
   doc.text(recipient.category || 'Category', settings.categoryX, settings.categoryY, { align: 'center', maxWidth: 220 });
 
   doc.setFontSize(settings.dateFontSize);
-  drawDateInTemplateSpaces(doc, settings.certificateDate, settings.dateX, settings.dateY);
+  drawDateInTemplateSpaces(doc, certificateDate, settings.dateX, settings.dateY);
 
   return doc;
 }
@@ -161,7 +164,7 @@ export async function downloadCertificateBatch(recipients: CertificateRecipient[
     doc.setFontSize(normalized.categoryFontSize);
     doc.text(recipient.category || 'Category', normalized.categoryX, normalized.categoryY, { align: 'center', maxWidth: 220 });
     doc.setFontSize(normalized.dateFontSize);
-    drawDateInTemplateSpaces(doc, normalized.certificateDate, normalized.dateX, normalized.dateY);
+    drawDateInTemplateSpaces(doc, recipient.certificateDate || normalized.certificateDate, normalized.dateX, normalized.dateY);
   });
   doc.save('mezzopedia-certificates.pdf');
 }
