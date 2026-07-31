@@ -25,9 +25,19 @@ type ScriptItem = {
   explanation?: string;
 };
 
+type Promotion = {
+  isPromoted?: boolean;
+  fromStage?: string;
+  currentStage?: string;
+  promotedTo?: string;
+};
+
 type Result = {
-  participant: { name: string; usercode: string; category: string; paymentStatus: string };
+  participant: { name: string; usercode: string; category: string; paymentStatus: string; currentStage?: string };
   stage?: string;
+  currentStage?: string;
+  promotion?: Promotion;
+  certificateDate?: string;
   score: number;
   maxScore: number;
   totalQuestions: number;
@@ -49,6 +59,7 @@ export default function ResultsPage() {
   const [certificateSettings, setCertificateSettings] = useState<Required<CertificateSettings>>(DEFAULT_CERTIFICATE_SETTINGS);
 
   const analysis = useMemo(() => result ? createAnalysis(result) : null, [result]);
+  const promotedTo = result?.promotion?.isPromoted ? result.promotion.promotedTo : '';
 
   useEffect(() => {
     fetch('/api/auth/participant/logout', { method: 'POST' }).catch(() => null);
@@ -125,14 +136,15 @@ export default function ResultsPage() {
     doc.text(`Name: ${result.participant.name}`, 20, 38);
     doc.text(`Category: ${result.participant.category}`, 20, 48);
     doc.text(`Stage: ${result.stage || ''}`, 20, 58);
-    doc.text(`Usercode: ${result.participant.usercode}`, 20, 68);
-    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, 78);
-    doc.text(`Time used: ${formatTime(result.timeUsedSeconds)}`, 20, 88);
-    doc.text(`Submitted: ${new Date(result.submittedAt).toLocaleString()}`, 20, 98);
-    doc.text('Result Analysis:', 20, 116);
-    doc.text(doc.splitTextToSize(analysis.summary, 170), 20, 126);
-    doc.text(doc.splitTextToSize(analysis.advice, 170), 20, 152);
-    addScriptToPdf(doc, 176);
+    if (promotedTo) doc.text(`Promotion: Promoted to ${promotedTo}`, 20, 68);
+    doc.text(`Usercode: ${result.participant.usercode}`, 20, promotedTo ? 78 : 68);
+    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, promotedTo ? 88 : 78);
+    doc.text(`Time used: ${formatTime(result.timeUsedSeconds)}`, 20, promotedTo ? 98 : 88);
+    doc.text(`Submitted: ${new Date(result.submittedAt).toLocaleString()}`, 20, promotedTo ? 108 : 98);
+    doc.text('Result Analysis:', 20, promotedTo ? 126 : 116);
+    doc.text(doc.splitTextToSize(analysis.summary, 170), 20, promotedTo ? 136 : 126);
+    doc.text(doc.splitTextToSize(analysis.advice, 170), 20, promotedTo ? 162 : 152);
+    addScriptToPdf(doc, promotedTo ? 186 : 176);
     doc.save(`mezzopedia-result-and-script-${result.participant.usercode}.pdf`);
   }
 
@@ -145,14 +157,15 @@ export default function ResultsPage() {
     doc.text(`Name: ${result.participant.name}`, 20, 36);
     doc.text(`Category: ${result.participant.category}`, 20, 46);
     doc.text(`Stage: ${result.stage || ''}`, 20, 56);
-    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, 66);
-    addScriptToPdf(doc, 84);
+    if (promotedTo) doc.text(`Promotion: Promoted to ${promotedTo}`, 20, 66);
+    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, promotedTo ? 76 : 66);
+    addScriptToPdf(doc, promotedTo ? 94 : 84);
     doc.save(`mezzopedia-script-${result.participant.usercode}.pdf`);
   }
 
   async function downloadCertificatePdf() {
     if (!result) return;
-    await downloadCertificate({ name: result.participant.name, category: result.participant.category, usercode: result.participant.usercode }, certificateSettings);
+    await downloadCertificate({ name: result.participant.name, category: result.participant.category, usercode: result.participant.usercode, certificateDate: result.certificateDate }, certificateSettings);
   }
 
   return (
@@ -178,6 +191,11 @@ export default function ResultsPage() {
             </form>
           ) : (
             <section style={{ marginTop: 18 }}>
+              {promotedTo && <div className="alert alert-success" style={{ textAlign: 'center', padding: '26px 18px', border: '3px solid rgba(15,138,75,0.45)', marginBottom: 18 }}>
+                <div style={{ fontSize: 'clamp(2.1rem, 6vw, 4rem)', lineHeight: 1.05, fontWeight: 900, letterSpacing: 1 }}>PROMOTED TO {promotedTo.toUpperCase()}</div>
+                <div style={{ fontSize: '1.1rem', marginTop: 8 }}>of the Mezzopedia National Mathematics Competition</div>
+              </div>}
+
               <span className="badge">Official Result</span>
               <h1 style={{ fontSize: '2.4rem', marginTop: 12 }}>{result.participant.name}</h1>
               <p className="muted">{result.participant.category} • {result.stage || 'Contest'} • {result.participant.usercode}</p>
