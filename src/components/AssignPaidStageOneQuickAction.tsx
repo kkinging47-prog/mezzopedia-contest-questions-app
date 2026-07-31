@@ -1,13 +1,29 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
+
+const DISMISS_KEY = 'mezzopedia-hide-paid-stage-one-quick-action';
 
 export default function AssignPaidStageOneQuickAction() {
   const pathname = usePathname();
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissed, setDismissed] = useState(true);
+
+  useEffect(() => {
+    if (pathname !== '/admin/stages') return;
+    try {
+      setDismissed(window.localStorage.getItem(DISMISS_KEY) === '1');
+    } catch {
+      setDismissed(false);
+    }
+  }, [pathname]);
+
+  function closeCard() {
+    setDismissed(true);
+    try { window.localStorage.setItem(DISMISS_KEY, '1'); } catch { /* ignore */ }
+  }
 
   if (pathname !== '/admin/stages' || dismissed) return null;
 
@@ -47,12 +63,21 @@ export default function AssignPaidStageOneQuickAction() {
         boxShadow: '0 18px 60px rgba(15, 23, 42, .22)'
       }}
     >
-      <div className="flex between wrap" style={{ alignItems: 'flex-start' }}>
-        <div>
+      <div className="flex between wrap" style={{ alignItems: 'flex-start', gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 220 }}>
           <strong>Stage 1 Quick Action</strong>
           <p className="small muted" style={{ margin: '6px 0 10px' }}>Move all paid candidates into Stage 1. Unpaid and pending candidates are not touched.</p>
         </div>
-        <button className="btn btn-light" type="button" onClick={() => setDismissed(true)} style={{ padding: '8px 10px', minHeight: 34 }}>×</button>
+        <button
+          className="btn btn-danger"
+          type="button"
+          onClick={closeCard}
+          aria-label="Close Stage 1 quick action"
+          title="Close"
+          style={{ padding: '8px 12px', minHeight: 36, fontWeight: 800 }}
+        >
+          Close ×
+        </button>
       </div>
       <button className="btn btn-success" type="button" onClick={assignPaidToStageOne} disabled={loading} style={{ width: '100%' }}>
         {loading ? 'Assigning...' : 'Assign Paid Candidates to Stage 1'}
