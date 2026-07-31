@@ -1,7 +1,14 @@
+import { CONTEST_STAGES } from '@/lib/constants';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { verifyPassword } from '@/lib/auth';
-import { jsonError, normalizeCategory, percentage } from '@/lib/utils';
+import { verifyParticipantPassword } from '@/lib/auth';
+import { jsonError, normalizeCategory, normalizeContestStage, percentage } from '@/lib/utils';
 import { activeElapsedSeconds, publicAnswers } from '@/lib/sessionTime';
+
+type StageName = (typeof CONTEST_STAGES)[number];
+
+function stageIndex(stage: string) {
+  return CONTEST_STAGES.indexOf(stage as StageName);
+}
 
 function optionText(options: any[], optionId: string) {
   const match = (options || []).find(option => String(option.id) === String(optionId));
@@ -38,6 +45,21 @@ function bestResultSession(a: any, b: any) {
   return submittedTime(b?.submitted_at) - submittedTime(a?.submitted_at);
 }
 
+function promotionFor(sessionStageInput: unknown, currentStageInput: unknown) {
+  const fromStage = normalizeContestStage(sessionStageInput || 'Stage 1');
+  const currentStage = normalizeContestStage(currentStageInput || fromStage);
+  const fromIndex = stageIndex(fromStage);
+  const currentIndex = stageIndex(currentStage);
+  const isPromoted = currentIndex > fromIndex;
+
+  return {
+    isPromoted,
+    fromStage,
+    currentStage,
+    promotedTo: isPromoted ? currentStage : ''
+  };
+}
+
 export async function POST(request: Request) {
   const { category, usercode, password } = await request.json().catch(() => ({}));
   const code = String(usercode || '').trim();
@@ -56,7 +78,7 @@ export async function POST(request: Request) {
   if (error) return jsonError(error.message, 500);
   if (!participant) return jsonError('Invalid result lookup details.', 401);
 
-  const ok = await verifyPassword(pass, participant.password_hash);
+  const ok = await verifyParticipantPassword(pass, participant.password_hash);
   if (!ok) return jsonError('Invalid result lookup details.', 401);
 
   const { data: sessions, error: sError } = await supabaseAdmin
@@ -76,6 +98,7 @@ export async function POST(request: Request) {
   // is no newer completed result for the same candidate.
   const session = [...sessions].sort(bestResultSession)[0];
   const timeUsedSeconds = sessionTimeUsed(session);
+  const promotion = promotionFor(session.contest_stage || '', participant.contest_stage || session.contest_stage || '');
 
   const questionIds: string[] = Array.isArray(session.question_order) ? session.question_order.map(String) : [];
   const answers = publicAnswers(session);
@@ -120,8 +143,16 @@ export async function POST(request: Request) {
   return Response.json({
     success: true,
     result: {
-      participant: { name: participant.name, usercode: participant.usercode, category: participant.category, paymentStatus: participant.payment_status },
+      participant: {
+        name: participant.name,
+        usercode: participant.usercode,
+        category: participant.category,
+        paymentStatus: participant.payment_status,
+        currentStage: normalizeContestStage(participant.contest_stage || 'Stage 1')
+      },
       stage: session.contest_stage || '',
+      currentStage: normalizeContestStage(participant.contest_stage || session.contest_stage || 'Stage 1'),
+      promotion,
       status: session.status,
       score: session.score || 0,
       maxScore: session.max_score || session.total_questions || 0,
