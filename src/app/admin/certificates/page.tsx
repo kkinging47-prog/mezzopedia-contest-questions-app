@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { CertificateSettings, DEFAULT_CERTIFICATE_SETTINGS, downloadCertificate, downloadCertificateBatch, normalizeCertificateSettings } from '@/lib/certificatePdf';
 
-type Candidate = { sessionId: string; name: string; usercode: string; category: string; email?: string; submittedAt?: string };
+type Candidate = { sessionId: string; name: string; usercode: string; category: string; stage?: string; certificateDate?: string; email?: string; submittedAt?: string };
 type ConfigRow = { key: string; value: unknown };
 
 const MAX_CERTIFICATE_IMAGE_SIZE = 15 * 1024 * 1024;
@@ -59,7 +59,10 @@ export default function AdminCertificatesPage() {
     setError('');
     const configRes = await fetch('/api/admin/config').then(r => r.json()).catch(() => ({}));
     const row = (configRes.config || []).find((item: ConfigRow) => item.key === 'certificateSettings');
-    setSettings(normalizeCertificateSettings((row?.value || DEFAULT_CERTIFICATE_SETTINGS) as CertificateSettings));
+    const effectiveRes = await fetch('/api/certificate-settings').then(r => r.json()).catch(() => ({}));
+    const storedSettings = normalizeCertificateSettings((row?.value || DEFAULT_CERTIFICATE_SETTINGS) as CertificateSettings);
+    const effectiveDate = effectiveRes?.settings?.certificateDate || storedSettings.certificateDate;
+    setSettings(normalizeCertificateSettings({ ...storedSettings, certificateDate: effectiveDate }));
     const candidateRes = await fetch('/api/admin/certificates/candidates').then(r => r.json()).catch(() => ({}));
     if (candidateRes.error) setError(candidateRes.error);
     setCandidates(candidateRes.candidates || []);
@@ -105,7 +108,7 @@ export default function AdminCertificatesPage() {
     const res = await fetch('/api/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: { certificateSettings: settings } }) });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) { setError(json.error || 'Could not save certificate settings.'); return; }
-    setMessage('Certificate settings saved. Participants will now use this certificate template on the results page.');
+    setMessage('Certificate settings saved. The certificate date will still use each stage scheduled end date when that stage has an end date.');
   }
 
   async function importEmails() {
@@ -125,13 +128,13 @@ export default function AdminCertificatesPage() {
 
   function toggleCandidate(id: string) { setSelectedIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]); }
   function toggleAll() { setSelectedIds(selectedAll ? [] : candidates.map(c => c.sessionId)); }
-  async function downloadOne(candidate: Candidate) { await downloadCertificate({ name: candidate.name, category: candidate.category, usercode: candidate.usercode }, settings); }
-  async function downloadSelected() { await downloadCertificateBatch(selectedCandidates.map(c => ({ name: c.name, category: c.category, usercode: c.usercode })), settings); }
+  async function downloadOne(candidate: Candidate) { await downloadCertificate({ name: candidate.name, category: candidate.category, usercode: candidate.usercode, certificateDate: candidate.certificateDate || settings.certificateDate }, settings); }
+  async function downloadSelected() { await downloadCertificateBatch(selectedCandidates.map(c => ({ name: c.name, category: c.category, usercode: c.usercode, certificateDate: c.certificateDate || settings.certificateDate })), settings); }
 
   async function emailSelected() {
     if (!selectedIds.length) { setError('Select at least one candidate first.'); return; }
     setSending(true); setError(''); setMessage('Sending certificate email(s)...');
-    const res = await fetch('/api/admin/certificates/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionIds: selectedIds, certificateDate: settings.certificateDate }) });
+    const res = await fetch('/api/admin/certificates/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionIds: selectedIds }) });
     const json = await res.json().catch(() => ({}));
     setSending(false);
     if (!res.ok) { setError(json.error || 'Could not send certificate emails.'); setMessage(''); return; }
@@ -142,16 +145,16 @@ export default function AdminCertificatesPage() {
     <main className="math-bg" style={{ padding: '24px 0 80px' }}><div className="container">
       <nav className="nav flex between wrap no-print"><strong>Certificate Manager</strong><div className="flex wrap"><a className="btn btn-light" href="/admin">Back to Admin</a><button className="btn btn-primary" onClick={loadAll}>Refresh</button></div></nav>
 
-      <section className="card card-pad"><span className="badge">Certificate of Participation</span><h1 style={{ marginTop: 12 }}>Upload design and place candidate details</h1><p className="muted">Upload your certificate design as PNG/JPG/WEBP. The system will add the participant name, category and selected date in the blank spaces you left.</p>{message && <div className="alert alert-success">{message}</div>}{error && <div className="alert alert-error">{error}</div>}
-        <form onSubmit={saveSettings} className="grid"><div className="grid grid-2"><label><span className="label">Upload certificate design</span><input type="file" accept="image/*" onChange={e => uploadTemplate(e.target.files?.[0] || null)} /></label><label><span className="label">Certificate date</span><input className="input" type="date" value={settings.certificateDate} onChange={e => update('certificateDate', e.target.value)} /></label></div>
+      <section className="card card-pad"><span className="badge">Certificate of Participation</span><h1 style={{ marginTop: 12 }}>Upload design and place candidate details</h1><p className="muted">Upload your certificate design as PNG/JPG/WEBP. The system will add the participant name, category and the last scheduled date for the candidate's stage.</p>{message && <div className="alert alert-success">{message}</div>}{error && <div className="alert alert-error">{error}</div>}
+        <form onSubmit={saveSettings} className="grid"><div className="grid grid-2"><label><span className="label">Upload certificate design</span><input type="file" accept="image/*" onChange={e => uploadTemplate(e.target.files?.[0] || null)} /></label><label><span className="label">Fallback certificate date</span><input className="input" type="date" value={settings.certificateDate} onChange={e => update('certificateDate', e.target.value)} /><span className="small muted">Used only when the completed stage has no scheduled end date.</span></label></div>
           {settings.templateUrl && <div className="alert alert-info"><strong>Template uploaded:</strong> {settings.templateUrl.startsWith('data:') ? <span>Design is loaded and will be saved inside certificate settings.</span> : <a href={settings.templateUrl} target="_blank" rel="noreferrer">View certificate design</a>}</div>}
           <details open><summary><strong>Text positions and font sizes</strong></summary><p className="small muted">A4 landscape uses X from 0–297 and Y from 0–210. Increase Y to move text down. Increase X to move text right.</p><div className="grid grid-3" style={{ marginTop: 12 }}><NumberField label="Name X" value={settings.nameX} onChange={v => update('nameX', v)} /><NumberField label="Name Y" value={settings.nameY} onChange={v => update('nameY', v)} /><NumberField label="Name Font" value={settings.nameFontSize} onChange={v => update('nameFontSize', v)} /><NumberField label="Category X" value={settings.categoryX} onChange={v => update('categoryX', v)} /><NumberField label="Category Y" value={settings.categoryY} onChange={v => update('categoryY', v)} /><NumberField label="Category Font" value={settings.categoryFontSize} onChange={v => update('categoryFontSize', v)} /><NumberField label="Date X" value={settings.dateX} onChange={v => update('dateX', v)} /><NumberField label="Date Y" value={settings.dateY} onChange={v => update('dateY', v)} /><NumberField label="Date Font" value={settings.dateFontSize} onChange={v => update('dateFontSize', v)} /><label><span className="label">Text Color</span><input className="input" value={settings.textColor} onChange={e => update('textColor', e.target.value)} placeholder="#001f4d" /></label></div></details>
           <div className="flex wrap"><button className="btn btn-success" type="submit">Save Certificate Settings</button>{candidates[0] && <button type="button" className="btn btn-light" onClick={() => downloadOne(candidates[0])}>Preview with First Candidate</button>}</div></form></section>
 
       <section className="card card-pad" style={{ marginTop: 18 }}><h2>Import participant emails</h2><p className="muted">Paste one candidate per line in this order: usercode,email. Example: 001,student@email.com</p><textarea className="textarea" value={emailCsv} onChange={e => setEmailCsv(e.target.value)} placeholder="001,student@email.com" /><div className="flex wrap" style={{ marginTop: 12 }}><button className="btn btn-primary" onClick={importEmails}>Save Emails</button></div></section>
 
-      <section className="card card-pad" style={{ marginTop: 18 }}><div className="flex between wrap"><div><h2>Completed candidates</h2><p className="muted">Select candidates to generate certificates. Emails require participant email addresses and email environment variables.</p></div><div className="flex wrap no-print"><button className="btn btn-light" onClick={toggleAll}>{selectedAll ? 'Unselect All' : 'Select All'}</button><button className="btn btn-primary" onClick={downloadSelected} disabled={!selectedIds.length}>Download Selected / All PDF</button><button className="btn btn-success" onClick={emailSelected} disabled={!selectedIds.length || sending}>{sending ? 'Sending...' : 'Send Selected to Email'}</button></div></div>
-        {loading && <div className="alert alert-info">Loading completed candidates...</div>}{!loading && !candidates.length && <div className="alert alert-info">No completed candidates found yet.</div>}{!!candidates.length && <div className="table-wrap"><table><thead><tr><th>Select</th><th>Name</th><th>Code</th><th>Category</th><th>Email</th><th>Action</th></tr></thead><tbody>{candidates.map(candidate => <tr key={candidate.sessionId}><td><input type="checkbox" checked={selectedIds.includes(candidate.sessionId)} onChange={() => toggleCandidate(candidate.sessionId)} /></td><td>{candidate.name}</td><td>{candidate.usercode}</td><td>{candidate.category}</td><td>{candidate.email || <span className="muted">No email</span>}</td><td><button className="btn btn-light" onClick={() => downloadOne(candidate)}>Download</button></td></tr>)}</tbody></table></div>}
+      <section className="card card-pad" style={{ marginTop: 18 }}><div className="flex between wrap"><div><h2>Completed candidates</h2><p className="muted">Select candidates to generate certificates. The date is taken from the selected candidate's completed stage end date. Emails require participant email addresses and email environment variables.</p></div><div className="flex wrap no-print"><button className="btn btn-light" onClick={toggleAll}>{selectedAll ? 'Unselect All' : 'Select All'}</button><button className="btn btn-primary" onClick={downloadSelected} disabled={!selectedIds.length}>Download Selected / All PDF</button><button className="btn btn-success" onClick={emailSelected} disabled={!selectedIds.length || sending}>{sending ? 'Sending...' : 'Send Selected to Email'}</button></div></div>
+        {loading && <div className="alert alert-info">Loading completed candidates...</div>}{!loading && !candidates.length && <div className="alert alert-info">No completed candidates found yet.</div>}{!!candidates.length && <div className="table-wrap"><table><thead><tr><th>Select</th><th>Name</th><th>Code</th><th>Category</th><th>Stage</th><th>Certificate Date</th><th>Email</th><th>Action</th></tr></thead><tbody>{candidates.map(candidate => <tr key={candidate.sessionId}><td><input type="checkbox" checked={selectedIds.includes(candidate.sessionId)} onChange={() => toggleCandidate(candidate.sessionId)} /></td><td>{candidate.name}</td><td>{candidate.usercode}</td><td>{candidate.category}</td><td>{candidate.stage || ''}</td><td>{candidate.certificateDate || <span className="muted">No date</span>}</td><td>{candidate.email || <span className="muted">No email</span>}</td><td><button className="btn btn-light" onClick={() => downloadOne(candidate)}>Download</button></td></tr>)}</tbody></table></div>}
       </section>
     </div></main>
   );
