@@ -6,6 +6,7 @@ import AssignPaidStageOneQuickAction from '@/components/AssignPaidStageOneQuickA
 import AutoRefreshOnUpdate from '@/components/AutoRefreshOnUpdate';
 import CursorSymbolInsertGuard from '@/components/CursorSymbolInsertGuard';
 import RobustTestSubmitGuard from '@/components/RobustTestSubmitGuard';
+import TimedOutFinalSubmitGuard from '@/components/TimedOutFinalSubmitGuard';
 import MobileProctoringStartGuard from '@/components/MobileProctoringStartGuard';
 
 export const metadata: Metadata = {
@@ -30,6 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AutoRefreshOnUpdate />
         <CursorSymbolInsertGuard />
         <RobustTestSubmitGuard />
+        <TimedOutFinalSubmitGuard />
         <MobileProctoringStartGuard />
       </body>
     </html>
