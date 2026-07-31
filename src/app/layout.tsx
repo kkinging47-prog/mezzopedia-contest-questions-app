@@ -8,6 +8,7 @@ import CursorSymbolInsertGuard from '@/components/CursorSymbolInsertGuard';
 import RobustTestSubmitGuard from '@/components/RobustTestSubmitGuard';
 import TimedOutFinalSubmitGuard from '@/components/TimedOutFinalSubmitGuard';
 import MobileProctoringStartGuard from '@/components/MobileProctoringStartGuard';
+import ResultsPromotionBanner from '@/components/ResultsPromotionBanner';
 
 export const metadata: Metadata = {
   title: APP_NAME,
@@ -33,6 +34,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <RobustTestSubmitGuard />
         <TimedOutFinalSubmitGuard />
         <MobileProctoringStartGuard />
+        <ResultsPromotionBanner />
       </body>
     </html>
   );
