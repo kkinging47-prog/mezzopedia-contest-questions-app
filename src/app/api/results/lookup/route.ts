@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { verifyParticipantPassword } from '@/lib/auth';
 import { jsonError, normalizeCategory, normalizeContestStage, percentage } from '@/lib/utils';
 import { activeElapsedSeconds, publicAnswers } from '@/lib/sessionTime';
+import { certificateDateForStage } from '@/lib/certificateDate';
 
 type StageName = (typeof CONTEST_STAGES)[number];
 
@@ -100,6 +101,14 @@ export async function POST(request: Request) {
   const timeUsedSeconds = sessionTimeUsed(session);
   const promotion = promotionFor(session.contest_stage || '', participant.contest_stage || session.contest_stage || '');
 
+  const { data: configRows } = await supabaseAdmin
+    .from('app_config')
+    .select('key,value')
+    .in('key', ['stageSettings', 'certificateSettings']);
+  const config: Record<string, any> = {};
+  for (const row of configRows || []) config[row.key] = row.value;
+  const certificateDate = certificateDateForStage(config.stageSettings, session.contest_stage || '', config.certificateSettings?.certificateDate || session.submitted_at || '');
+
   const questionIds: string[] = Array.isArray(session.question_order) ? session.question_order.map(String) : [];
   const answers = publicAnswers(session);
   const breakdown = session.answer_breakdown || {};
@@ -153,6 +162,7 @@ export async function POST(request: Request) {
       stage: session.contest_stage || '',
       currentStage: normalizeContestStage(participant.contest_stage || session.contest_stage || 'Stage 1'),
       promotion,
+      certificateDate,
       status: session.status,
       score: session.score || 0,
       maxScore: session.max_score || session.total_questions || 0,
