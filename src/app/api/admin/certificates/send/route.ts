@@ -4,6 +4,7 @@ import { requireAdmin } from '@/lib/auth';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError } from '@/lib/utils';
 import { DEFAULT_CERTIFICATE_SETTINGS, normalizeCertificateSettings, CertificateSettings } from '@/lib/certificatePdf';
+import { certificateDateForStage } from '@/lib/certificateDate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,8 @@ type CertificateParticipant = {
 type CertificateSessionRow = {
   id: string;
   category?: string;
+  contest_stage?: string;
+  submitted_at?: string;
   status?: string;
   participant?: CertificateParticipant | CertificateParticipant[] | null;
 };
@@ -66,7 +69,7 @@ async function imageToDataUrl(url: string) {
   return `data:${contentType};base64,${Buffer.from(arrayBuffer).toString('base64')}`;
 }
 
-async function certificatePdfBase64(name: string, category: string, settings: Required<CertificateSettings>) {
+async function certificatePdfBase64(name: string, category: string, settings: Required<CertificateSettings>, certificateDate: string) {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const template = settings.templateUrl ? await imageToDataUrl(settings.templateUrl) : '';
   if (template) {
@@ -87,7 +90,7 @@ async function certificatePdfBase64(name: string, category: string, settings: Re
   doc.setFontSize(settings.categoryFontSize);
   doc.text(category, settings.categoryX, settings.categoryY, { align: 'center', maxWidth: 220 });
   doc.setFontSize(settings.dateFontSize);
-  drawDateInTemplateSpaces(doc, settings.certificateDate, settings.dateX, settings.dateY);
+  drawDateInTemplateSpaces(doc, certificateDate, settings.dateX, settings.dateY);
 
   return Buffer.from(doc.output('arraybuffer')).toString('base64');
 }
@@ -104,14 +107,19 @@ export async function POST(request: NextRequest) {
   const sessionIds = Array.isArray(body.sessionIds) ? body.sessionIds.map(String).filter(Boolean) : [];
   if (!sessionIds.length) return jsonError('Select at least one completed candidate.', 400);
 
-  const { data: settingRow } = await supabaseAdmin.from('app_config').select('value').eq('key', 'certificateSettings').maybeSingle();
-  const settings = normalizeCertificateSettings((settingRow?.value || DEFAULT_CERTIFICATE_SETTINGS) as CertificateSettings);
-  if (body.certificateDate) settings.certificateDate = String(body.certificateDate);
+  const { data: configRows } = await supabaseAdmin
+    .from('app_config')
+    .select('key,value')
+    .in('key', ['certificateSettings', 'stageSettings']);
+  const config: Record<string, any> = {};
+  for (const row of configRows || []) config[row.key] = row.value;
+  const settings = normalizeCertificateSettings((config.certificateSettings || DEFAULT_CERTIFICATE_SETTINGS) as CertificateSettings);
 
   const { data, error } = await supabaseAdmin
     .from('contest_sessions')
-    .select('id,category,status, participant:participants(name,usercode,email,category)')
-    .eq('status', 'completed')
+    .select('id,category,contest_stage,submitted_at,status, participant:participants(name,usercode,email,category)')
+    .in('status', ['completed', 'expired'])
+    .not('submitted_at', 'is', null)
     .in('id', sessionIds);
 
   if (error) return jsonError(`${error.message}. If the email column is missing, run supabase/run-this-certificate-email-fix.sql first.`, 500);
@@ -127,7 +135,8 @@ export async function POST(request: NextRequest) {
     const usercode = participant.usercode || '';
     if (!email) { failed.push(`${name || usercode}: no email`); continue; }
 
-    const pdf = await certificatePdfBase64(name, category, settings);
+    const certificateDate = certificateDateForStage(config.stageSettings, row.contest_stage || '', settings.certificateDate || row.submitted_at || '');
+    const pdf = await certificatePdfBase64(name, category, settings, certificateDate);
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
