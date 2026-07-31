@@ -37,6 +37,12 @@ function getRequestIp(request: Request) {
   return (request.headers.get('x-forwarded-for') || '').split(',')[0]?.trim() || request.headers.get('x-real-ip') || '';
 }
 
+function isUniqueInProgressError(error: unknown) {
+  const message = String((error as any)?.message || error || '');
+  const details = String((error as any)?.details || '');
+  return `${message} ${details}`.includes('one_in_progress_session_per_participant');
+}
+
 async function findParticipantByCodeAndPassword(usercode: string, password: string, category?: string) {
   let query = supabaseAdmin.from('participants').select('*').ilike('usercode', usercode);
   if (category) query = query.eq('category', category);
@@ -164,17 +170,39 @@ export async function POST(request: Request) {
   if (completed) return jsonError(`This code has already completed ${stage} and has been closed. Use the Results page to view your result.`, 403);
   if (!participant.is_active) return jsonError('This code is closed and cannot be used to start a test. Contact the contest administrator if this is a mistake.', 403);
 
-  let { data: session, error: sessionError } = await supabaseAdmin
+  const now = new Date();
+  const { data: inProgressSessions, error: sessionError } = await supabaseAdmin
     .from('contest_sessions')
     .select('*')
     .eq('participant_id', participant.id)
-    .eq('contest_stage', stage)
     .eq('status', 'in_progress')
-    .maybeSingle();
+    .order('started_at', { ascending: false });
 
   if (sessionError) return jsonError(sessionError.message, 500);
+
+  const currentStageSessions = (inProgressSessions || []).filter((row: any) => normalizeContestStage(row.contest_stage || 'Stage 1') === stage);
+  const staleSessionIds = (inProgressSessions || [])
+    .filter((row: any, index: number) => normalizeContestStage(row.contest_stage || 'Stage 1') !== stage || (currentStageSessions.length > 1 && currentStageSessions.slice(1).some((extra: any) => extra.id === row.id)))
+    .map((row: any) => row.id)
+    .filter(Boolean);
+
+  if (staleSessionIds.length) {
+    await supabaseAdmin
+      .from('contest_sessions')
+      .update({
+        status: 'cancelled',
+        active_login_token: null,
+        active_user_agent: null,
+        last_reauth_at: null,
+        updated_at: now.toISOString(),
+        proctoring_summary: { cancelledBeforeNewAssignedStageLogin: true, assignedStage: stage }
+      })
+      .in('id', staleSessionIds)
+      .then(() => null);
+  }
+
+  let session = currentStageSessions[0] || null;
   let loginType = 'LOGIN_NEW_SESSION';
-  const now = new Date();
 
   if (!session) {
     let questionQuery = supabaseAdmin.from('questions').select('id').eq('category', category).eq('is_active', true).eq('phase', stage);
@@ -193,24 +221,58 @@ export async function POST(request: Request) {
     const selected = await pickUniqueQuestionOrder(questions.map(q => q.id), requestedCount, category, stage);
     const expiresAt = new Date(now.getTime() + TEST_DURATION_MINUTES * 60 * 1000);
     const initialAnswers = answersWithResumeMeta({ answers: {} }, now, undefined, 0);
+    const insertPayload = {
+      participant_id: participant.id,
+      category,
+      contest_stage: stage,
+      status: 'in_progress',
+      started_at: now.toISOString(),
+      expires_at: expiresAt.toISOString(),
+      question_order: selected,
+      answers: initialAnswers,
+      total_questions: selected.length
+    };
 
-    const { data: created, error: createError } = await supabaseAdmin
+    let { data: created, error: createError } = await supabaseAdmin
       .from('contest_sessions')
-      .insert({
-        participant_id: participant.id,
-        category,
-        contest_stage: stage,
-        status: 'in_progress',
-        started_at: now.toISOString(),
-        expires_at: expiresAt.toISOString(),
-        question_order: selected,
-        answers: initialAnswers,
-        total_questions: selected.length
-      })
+      .insert(insertPayload)
       .select('*')
       .single();
 
-    if (createError) return jsonError(createError.message, 500);
+    if (createError && isUniqueInProgressError(createError)) {
+      const { data: conflictingSessions } = await supabaseAdmin
+        .from('contest_sessions')
+        .select('id,contest_stage,status')
+        .eq('participant_id', participant.id)
+        .eq('status', 'in_progress')
+        .limit(10);
+
+      const conflictIds = (conflictingSessions || [])
+        .filter((row: any) => normalizeContestStage(row.contest_stage || 'Stage 1') !== stage)
+        .map((row: any) => row.id)
+        .filter(Boolean);
+
+      if (conflictIds.length) {
+        await supabaseAdmin
+          .from('contest_sessions')
+          .update({ status: 'cancelled', active_login_token: null, active_user_agent: null, last_reauth_at: null, updated_at: now.toISOString(), proctoring_summary: { cancelledAfterDuplicateInProgressRetry: true, assignedStage: stage } })
+          .in('id', conflictIds)
+          .then(() => null);
+
+        const retry = await supabaseAdmin
+          .from('contest_sessions')
+          .insert(insertPayload)
+          .select('*')
+          .single();
+        created = retry.data;
+        createError = retry.error;
+      }
+    }
+
+    if (createError) {
+      if (isUniqueInProgressError(createError)) return jsonError('A previous unfinished session was still closing. Please tap Proceed to Test again.', 409);
+      return jsonError(createError.message, 500);
+    }
     session = created;
   } else {
     loginType = 'LOGIN_RESUME_EXISTING_SESSION';
@@ -227,7 +289,7 @@ export async function POST(request: Request) {
   await supabaseAdmin.from('participants').update({ last_login_at: now.toISOString(), login_count: previousLogins + 1 }).eq('id', participant.id);
   await supabaseAdmin.from('contest_sessions').update({ active_login_token: loginToken, active_user_agent: userAgent, last_reauth_at: now.toISOString(), answers: resumedAnswers, updated_at: now.toISOString() }).eq('id', session.id);
 
-  await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, ip_address: ipAddress, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, resumedExistingSession: loginType === 'LOGIN_RESUME_EXISTING_SESSION', questionCount: session.total_questions, paymentStatus: participant.payment_status || 'unpaid', ipAddress } }).then(() => null);
+  await supabaseAdmin.from('participant_login_events').insert({ participant_id: participant.id, session_id: session.id, usercode: participant.usercode, category: participant.category, contest_stage: stage, event_type: previousLogins > 0 ? 'MULTIPLE_OR_REPEAT_LOGIN' : loginType, login_token: loginToken, user_agent: userAgent, ip_address: ipAddress, details: { previousLogins, latestLoginInvalidatesOlderBrowsers: true, resumedExistingSession: loginType === 'LOGIN_RESUME_EXISTING_SESSION', questionCount: session.total_questions, paymentStatus: participant.payment_status || 'unpaid', ipAddress, cancelledStaleSessionCount: staleSessionIds.length } }).then(() => null);
 
   if (previousLogins > 0) {
     await supabaseAdmin.from('proctoring_events').insert({ session_id: session.id, participant_id: participant.id, event_type: 'MULTIPLE_OR_REPEAT_USERCODE_LOGIN', severity: 'high', details: { previousLogins, ipAddress, message: 'The same usercode logged in again. Older browser sessions were invalidated, but the latest login resumes the existing session.' }, user_agent: userAgent, ip_address: ipAddress }).then(() => null);
