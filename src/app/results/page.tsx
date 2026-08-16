@@ -32,11 +32,43 @@ type Promotion = {
   promotedTo?: string;
 };
 
+type StageResult = {
+  stage: string;
+  status: string;
+  score: number;
+  maxScore: number;
+  totalQuestions: number;
+  percentage: number;
+  timeUsedSeconds: number;
+  submittedAt: string;
+  proctoringSummary?: { riskLevel?: string; total?: number; critical?: number; byType?: Record<string, number> };
+  script?: ScriptItem[];
+};
+
+type OverallSummary = {
+  completedStages: number;
+  totalScore: number;
+  totalMaxScore: number;
+  averageScore: number;
+  averagePercentage: number;
+  totalTimeSeconds: number;
+  averageTimeSeconds: number;
+  correctQuestions: number;
+  wrongQuestions: number;
+  unansweredQuestions: number;
+  strongStages: string[];
+  weakStages: string[];
+  wrongByStage: Array<{ stage: string; wrongQuestionNumbers: number[]; correct: number; wrong: number }>;
+  trend: string;
+  analysis: string;
+};
+
 type Result = {
-  participant: { name: string; usercode: string; category: string; paymentStatus: string; currentStage?: string };
+  participant: { name: string; usercode: string; category: string; paymentStatus: string; currentStage?: string; class?: string; school?: string; location?: string; region?: string };
   stage?: string;
   currentStage?: string;
   promotion?: Promotion;
+  isLiveFinalist?: boolean;
   certificateDate?: string;
   score: number;
   maxScore: number;
@@ -46,6 +78,8 @@ type Result = {
   submittedAt: string;
   proctoringSummary: { riskLevel?: string; total?: number; critical?: number; byType?: Record<string, number> };
   script?: ScriptItem[];
+  stageResults?: Array<StageResult | null>;
+  overallSummary?: OverallSummary;
 };
 
 export default function ResultsPage() {
@@ -60,6 +94,7 @@ export default function ResultsPage() {
 
   const analysis = useMemo(() => result ? createAnalysis(result) : null, [result]);
   const promotedTo = result?.promotion?.isPromoted ? result.promotion.promotedTo : '';
+  const stageRows = useMemo(() => (result?.stageResults || []).filter(Boolean) as StageResult[], [result]);
 
   useEffect(() => {
     fetch('/api/auth/participant/logout', { method: 'POST' }).catch(() => null);
@@ -100,15 +135,40 @@ export default function ResultsPage() {
     return y;
   }
 
-  function addScriptToPdf(doc: jsPDF, startY: number) {
-    if (!result?.script?.length) return startY;
+  function addStageSummaryToPdf(doc: jsPDF, startY: number) {
+    if (!result?.overallSummary) return startY;
+    let y = ensureSpace(doc, startY, 42);
+    const summary = result.overallSummary;
+    doc.setFontSize(14);
+    doc.text('Three-Stage Summary Report', 20, y);
+    y += 8;
+    doc.setFontSize(10);
+    y = addWrappedText(doc, `Average score: ${summary.averageScore} points per completed stage. Average percentage: ${summary.averagePercentage}%. Average time: ${formatTime(summary.averageTimeSeconds)}.`, 20, y, 170, 5);
+    y = addWrappedText(doc, `Questions correct: ${summary.correctQuestions}. Wrong: ${summary.wrongQuestions}. Unanswered: ${summary.unansweredQuestions}. Trend: ${summary.trend}.`, 20, y + 2, 170, 5);
+    y = addWrappedText(doc, `AI analysis: ${summary.analysis}`, 20, y + 2, 170, 5);
+
+    for (const stage of stageRows) {
+      y = ensureSpace(doc, y + 4, 24);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`${stage.stage}: ${stage.score}/${stage.maxScore} (${stage.percentage}%)`, 20, y);
+      doc.setFont('helvetica', 'normal');
+      y += 6;
+      const wrong = summary.wrongByStage?.find(item => item.stage === stage.stage);
+      const wrongList = wrong?.wrongQuestionNumbers?.length ? wrong.wrongQuestionNumbers.join(', ') : 'None';
+      y = addWrappedText(doc, `Time: ${formatTime(stage.timeUsedSeconds)}. Correct: ${wrong?.correct ?? 0}. Wrong/Unanswered: ${wrong?.wrong ?? 0}. Questions to review: ${wrongList}.`, 24, y, 160, 5);
+    }
+    return y + 4;
+  }
+
+  function addScriptToPdf(doc: jsPDF, startY: number, script = result?.script || [], title = 'Candidate Answer Script') {
+    if (!script.length) return startY;
     let y = ensureSpace(doc, startY, 20);
     doc.setFontSize(14);
-    doc.text('Candidate Answer Script', 20, y);
+    doc.text(title, 20, y);
     y += 8;
     doc.setFontSize(9);
 
-    for (const item of result.script) {
+    for (const item of script) {
       y = ensureSpace(doc, y, 45);
       doc.setFont('helvetica', 'bold');
       y = addWrappedText(doc, `${item.number}. ${item.questionText}`, 20, y, 170, 4.5);
@@ -127,39 +187,52 @@ export default function ResultsPage() {
     return y;
   }
 
+  function addHeader(doc: jsPDF, title: string) {
+    if (!result) return 20;
+    doc.setFontSize(18);
+    doc.text(title, 20, 20);
+    doc.setFontSize(11);
+    doc.text(`Name: ${result.participant.name}`, 20, 36);
+    doc.text(`Category/Class: ${result.participant.class || result.participant.category}`, 20, 46);
+    doc.text(`Usercode: ${result.participant.usercode}`, 20, 56);
+    if (promotedTo) doc.text(`Promotion: Promoted to ${promotedTo}`, 20, 66);
+    if (result.participant.school) doc.text(`School: ${result.participant.school}`, 20, promotedTo ? 76 : 66);
+    return promotedTo ? (result.participant.school ? 88 : 78) : (result.participant.school ? 78 : 68);
+  }
+
   function downloadPdf() {
     if (!result || !analysis) return;
     const doc = new jsPDF();
-    doc.setFontSize(18);
-    doc.text('Mezzopedia Contest Result', 20, 20);
-    doc.setFontSize(12);
-    doc.text(`Name: ${result.participant.name}`, 20, 38);
-    doc.text(`Category: ${result.participant.category}`, 20, 48);
-    doc.text(`Stage: ${result.stage || ''}`, 20, 58);
-    if (promotedTo) doc.text(`Promotion: Promoted to ${promotedTo}`, 20, 68);
-    doc.text(`Usercode: ${result.participant.usercode}`, 20, promotedTo ? 78 : 68);
-    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, promotedTo ? 88 : 78);
-    doc.text(`Time used: ${formatTime(result.timeUsedSeconds)}`, 20, promotedTo ? 98 : 88);
-    doc.text(`Submitted: ${new Date(result.submittedAt).toLocaleString()}`, 20, promotedTo ? 108 : 98);
-    doc.text('Result Analysis:', 20, promotedTo ? 126 : 116);
-    doc.text(doc.splitTextToSize(analysis.summary, 170), 20, promotedTo ? 136 : 126);
-    doc.text(doc.splitTextToSize(analysis.advice, 170), 20, promotedTo ? 162 : 152);
-    addScriptToPdf(doc, promotedTo ? 186 : 176);
-    doc.save(`mezzopedia-result-and-script-${result.participant.usercode}.pdf`);
+    let y = addHeader(doc, 'Mezzopedia Contest Result and Summary');
+    doc.setFontSize(11);
+    doc.text(`Latest stage: ${result.stage || ''}`, 20, y); y += 10;
+    doc.text(`Latest score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, y); y += 10;
+    doc.text(`Latest time used: ${formatTime(result.timeUsedSeconds)}`, 20, y); y += 10;
+    doc.text(`Submitted: ${formatDate(result.submittedAt)}`, 20, y); y += 14;
+    doc.text('Latest Result Analysis:', 20, y); y += 8;
+    y = addWrappedText(doc, analysis.summary, 20, y, 170, 5);
+    y = addWrappedText(doc, analysis.advice, 20, y + 2, 170, 5);
+    y = addStageSummaryToPdf(doc, y + 8);
+    addScriptToPdf(doc, y + 4);
+    doc.save(`mezzopedia-result-summary-${result.participant.usercode}.pdf`);
+  }
+
+  function downloadSummaryPdf() {
+    if (!result) return;
+    const doc = new jsPDF();
+    const y = addHeader(doc, 'Mezzopedia Three-Stage Summary Report');
+    addStageSummaryToPdf(doc, y);
+    doc.save(`mezzopedia-three-stage-summary-${result.participant.usercode}.pdf`);
   }
 
   function downloadScriptPdf() {
     if (!result) return;
     const doc = new jsPDF();
-    doc.setFontSize(18);
-    doc.text('Mezzopedia Candidate Answer Script', 20, 20);
+    const y = addHeader(doc, 'Mezzopedia Candidate Answer Script');
     doc.setFontSize(11);
-    doc.text(`Name: ${result.participant.name}`, 20, 36);
-    doc.text(`Category: ${result.participant.category}`, 20, 46);
-    doc.text(`Stage: ${result.stage || ''}`, 20, 56);
-    if (promotedTo) doc.text(`Promotion: Promoted to ${promotedTo}`, 20, 66);
-    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, promotedTo ? 76 : 66);
-    addScriptToPdf(doc, promotedTo ? 94 : 84);
+    doc.text(`Latest stage: ${result.stage || ''}`, 20, y);
+    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, y + 10);
+    addScriptToPdf(doc, y + 24);
     doc.save(`mezzopedia-script-${result.participant.usercode}.pdf`);
   }
 
@@ -170,11 +243,11 @@ export default function ResultsPage() {
 
   return (
     <main className="math-bg centered">
-      <div className="container" style={{ maxWidth: 1000 }}>
+      <div className="container" style={{ maxWidth: 1080 }}>
         <div className="card card-pad">
           <div className="flex between wrap no-print">
             <Link href="/" className="badge">← Back to Home</Link>
-            {result && <div className="flex wrap"><button className="btn btn-light" onClick={() => window.print()}>Print</button><button className="btn btn-primary" onClick={downloadPdf}>Download Result + Script PDF</button><button className="btn btn-light" onClick={downloadScriptPdf}>Download Script PDF</button><button className="btn btn-success" onClick={downloadCertificatePdf}>Download Certificate PDF</button></div>}
+            {result && <div className="flex wrap"><button className="btn btn-light" onClick={() => window.print()}>Print</button><button className="btn btn-primary" onClick={downloadPdf}>Download Result + Summary PDF</button><button className="btn btn-light" onClick={downloadSummaryPdf}>Download 3-Stage Summary PDF</button><button className="btn btn-light" onClick={downloadScriptPdf}>Download Script PDF</button><button className="btn btn-success" onClick={downloadCertificatePdf}>Download Certificate PDF</button></div>}
           </div>
 
           {!result ? (
@@ -198,12 +271,12 @@ export default function ResultsPage() {
 
               <span className="badge">Official Result</span>
               <h1 style={{ fontSize: '2.4rem', marginTop: 12 }}>{result.participant.name}</h1>
-              <p className="muted">{result.participant.category} • {result.stage || 'Contest'} • {result.participant.usercode}</p>
+              <p className="muted">{result.participant.class || result.participant.category} • Latest result: {result.stage || 'Contest'} • {result.participant.usercode}</p>
 
               <div className="grid grid-3" style={{ margin: '24px 0' }}>
-                <Metric title="Score" value={`${result.score}/${result.maxScore}`} />
-                <Metric title="Percentage" value={`${result.percentage}%`} />
-                <Metric title="Time Used" value={formatTime(result.timeUsedSeconds)} />
+                <Metric title="Latest Score" value={`${result.score}/${result.maxScore}`} />
+                <Metric title="Latest Percentage" value={`${result.percentage}%`} />
+                <Metric title="Latest Time Used" value={formatTime(result.timeUsedSeconds)} />
               </div>
 
               <div className="card card-pad" style={{ background: '#f7f9fd', boxShadow: 'none' }}>
@@ -213,33 +286,15 @@ export default function ResultsPage() {
                 <p className="small muted">Proctoring risk: {result.proctoringSummary?.riskLevel || 'LOW'} • Events logged: {result.proctoringSummary?.total || 0}</p>
               </div>
 
+              <ThreeStageSummary result={result} stageRows={stageRows} />
+
               <div className="card card-pad" style={{ marginTop: 18, boxShadow: 'none' }}>
-                <h2>Answer Script</h2>
-                <p className="muted">This shows each question, the options, the answer selected by the candidate, the correct answer and the points awarded.</p>
-                {!result.script?.length ? <div className="alert alert-info">The answer script is not available for this result.</div> : <div className="grid">
-                  {result.script.map(item => <div key={item.questionId} className="card card-pad" style={{ boxShadow: 'none', border: `1px solid ${item.isCorrect ? '#bbf7d0' : '#fecaca'}` }}>
-                    <div className="flex between wrap">
-                      <strong>Question {item.number}</strong>
-                      <span className={item.isCorrect ? 'badge badge-good' : 'badge badge-warn'}>{item.pointsAwarded}/{item.points} point(s) • {item.isCorrect ? 'Correct' : 'Wrong'}</span>
-                    </div>
-                    <p style={{ whiteSpace: 'pre-wrap' }}>{item.questionText}</p>
-                    {item.questionImageUrl && <img src={item.questionImageUrl} alt={`Question ${item.number}`} className="question-image" />}
-                    <ol style={{ paddingLeft: 20 }}>
-                      {(item.options || []).map(option => <li key={option.id} style={{ marginBottom: 6 }}>
-                        <strong>{option.id}.</strong> {option.text || 'Image option'}
-                        {option.imageUrl && <div><img src={option.imageUrl} alt={`Option ${option.id}`} className="question-image" style={{ maxHeight: 120 }} /></div>}
-                      </li>)}
-                    </ol>
-                    <div className="grid grid-2">
-                      <div className="alert alert-info"><strong>Selected answer:</strong><br />{item.selectedOptionId || 'Not answered'} {item.selectedAnswer ? `- ${item.selectedAnswer}` : ''}</div>
-                      <div className="alert alert-success"><strong>Correct answer:</strong><br />{item.correctOptionId} {item.correctAnswer ? `- ${item.correctAnswer}` : ''}</div>
-                    </div>
-                    {item.explanation && <p className="small muted"><strong>Explanation:</strong> {item.explanation}</p>}
-                  </div>)}
-                </div>}
+                <h2>Latest Answer Script</h2>
+                <p className="muted">This shows each question, the options, the answer selected by the candidate, the correct answer and the points awarded for the latest available stage result.</p>
+                {!result.script?.length ? <div className="alert alert-info">The answer script is not available for this result.</div> : <ScriptList script={result.script} />}
               </div>
 
-              <div className="alert alert-info no-print" style={{ marginTop: 18 }}>You can download your official certificate of participation and the full answer script as PDF using the buttons above.</div>
+              <div className="alert alert-info no-print" style={{ marginTop: 18 }}>You can download your three-stage summary, official certificate of participation and answer script as PDF using the buttons above.</div>
             </section>
           )}
         </div>
@@ -248,15 +303,76 @@ export default function ResultsPage() {
   );
 }
 
+function ThreeStageSummary({ result, stageRows }: { result: Result; stageRows: StageResult[] }) {
+  const summary = result.overallSummary;
+  if (!summary) return null;
+  return <div className="card card-pad" style={{ marginTop: 18, boxShadow: 'none' }}>
+    <h2>Three-Stage Summary Report</h2>
+    <p className="muted">This combines Stage 1, Stage 2 and Stage 3 performance into one report.</p>
+    <div className="grid grid-4" style={{ margin: '18px 0' }}>
+      <Metric title="Average Score" value={`${summary.averageScore}`} />
+      <Metric title="Average %" value={`${summary.averagePercentage}%`} />
+      <Metric title="Average Time" value={formatTime(summary.averageTimeSeconds)} />
+      <Metric title="Correct / Wrong" value={`${summary.correctQuestions}/${summary.wrongQuestions}`} />
+    </div>
+    <div className="alert alert-info"><strong>AI summary:</strong> {summary.analysis}</div>
+    {!!stageRows.length && <div className="table-wrap"><table>
+      <thead><tr><th>Stage</th><th>Score</th><th>%</th><th>Time</th><th>Correct</th><th>Wrong/Unanswered</th><th>Questions to Review</th></tr></thead>
+      <tbody>{stageRows.map(stage => {
+        const wrong = summary.wrongByStage?.find(item => item.stage === stage.stage);
+        return <tr key={stage.stage}>
+          <td><strong>{stage.stage}</strong></td>
+          <td>{stage.score}/{stage.maxScore}</td>
+          <td>{stage.percentage}%</td>
+          <td>{formatTime(stage.timeUsedSeconds)}</td>
+          <td>{wrong?.correct ?? stage.script?.filter(item => item.isCorrect).length ?? 0}</td>
+          <td>{wrong?.wrong ?? stage.script?.filter(item => !item.isCorrect).length ?? 0}</td>
+          <td>{wrong?.wrongQuestionNumbers?.length ? wrong.wrongQuestionNumbers.join(', ') : 'None'}</td>
+        </tr>;
+      })}</tbody>
+    </table></div>}
+  </div>;
+}
+
+function ScriptList({ script }: { script: ScriptItem[] }) {
+  return <div className="grid">
+    {script.map(item => <div key={item.questionId} className="card card-pad" style={{ boxShadow: 'none', border: `1px solid ${item.isCorrect ? '#bbf7d0' : '#fecaca'}` }}>
+      <div className="flex between wrap">
+        <strong>Question {item.number}</strong>
+        <span className={item.isCorrect ? 'badge badge-good' : 'badge badge-warn'}>{item.pointsAwarded}/{item.points} point(s) • {item.isCorrect ? 'Correct' : 'Wrong'}</span>
+      </div>
+      <p style={{ whiteSpace: 'pre-wrap' }}>{item.questionText}</p>
+      {item.questionImageUrl && <img src={item.questionImageUrl} alt={`Question ${item.number}`} className="question-image" />}
+      <ol style={{ paddingLeft: 20 }}>
+        {(item.options || []).map(option => <li key={option.id} style={{ marginBottom: 6 }}>
+          <strong>{option.id}.</strong> {option.text || 'Image option'}
+          {option.imageUrl && <div><img src={option.imageUrl} alt={`Option ${option.id}`} className="question-image" style={{ maxHeight: 120 }} /></div>}
+        </li>)}
+      </ol>
+      <div className="grid grid-2">
+        <div className="alert alert-info"><strong>Selected answer:</strong><br />{item.selectedOptionId || 'Not answered'} {item.selectedAnswer ? `- ${item.selectedAnswer}` : ''}</div>
+        <div className="alert alert-success"><strong>Correct answer:</strong><br />{item.correctOptionId} {item.correctAnswer ? `- ${item.correctAnswer}` : ''}</div>
+      </div>
+      {item.explanation && <p className="small muted"><strong>Explanation:</strong> {item.explanation}</p>}
+    </div>)}
+  </div>;
+}
+
 function Metric({ title, value }: { title: string; value: string }) {
   return <div className="card card-pad" style={{ textAlign: 'center', boxShadow: 'none' }}><div className="muted small">{title}</div><h2>{value}</h2></div>;
 }
 
 function formatTime(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
+  const h = Math.floor((seconds || 0) / 3600);
+  const m = Math.floor(((seconds || 0) % 3600) / 60);
+  const s = Math.floor((seconds || 0) % 60);
   return h > 0 ? `${h}h ${m}m ${s}s` : `${m}m ${s}s`;
+}
+
+function formatDate(value?: string) {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 }
 
 function createAnalysis(result: Result) {
@@ -265,18 +381,19 @@ function createAnalysis(result: Result) {
   let summary = '';
   let advice = '';
   if (p >= 85) {
-    summary = 'Excellent performance. The candidate showed strong mastery and high accuracy.';
-    advice = 'The candidate should be considered highly competitive for the next stage, subject to the proctoring review and contest rules.';
+    summary = 'Excellent latest-stage performance. The candidate showed strong mastery and high accuracy.';
+    advice = 'The candidate should be considered highly competitive, subject to the proctoring review and contest rules.';
   } else if (p >= 70) {
-    summary = 'Very good performance. The candidate has a strong foundation with a few areas to improve.';
-    advice = 'The candidate should review missed topics and improve speed for later rounds.';
+    summary = 'Very good latest-stage performance. The candidate has a strong foundation with a few areas to improve.';
+    advice = 'The candidate should review missed questions and improve speed for later rounds.';
   } else if (p >= 50) {
-    summary = 'Fair performance. The candidate demonstrated partial understanding but needs more practice.';
+    summary = 'Fair latest-stage performance. The candidate demonstrated partial understanding but needs more practice.';
     advice = 'The candidate should focus on weak areas, timed practice and accuracy under pressure.';
   } else {
-    summary = 'The score shows that the candidate needs stronger preparation before the next contest stage.';
+    summary = 'The latest score shows that the candidate needs stronger preparation before the next contest stage.';
     advice = 'The candidate should revise core concepts, practice daily and attempt more guided problem solving.';
   }
+  if (result.overallSummary?.analysis) advice += ` Overall: ${result.overallSummary.analysis}`;
   if (risk === 'CRITICAL' || risk === 'HIGH') advice += ' The proctoring record requires administrative review before final confirmation.';
   return { summary, advice };
 }
