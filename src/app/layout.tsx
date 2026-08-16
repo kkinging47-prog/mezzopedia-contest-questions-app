@@ -9,6 +9,7 @@ import RobustTestSubmitGuard from '@/components/RobustTestSubmitGuard';
 import TimedOutFinalSubmitGuard from '@/components/TimedOutFinalSubmitGuard';
 import MobileProctoringStartGuard from '@/components/MobileProctoringStartGuard';
 import ResultsPromotionBanner from '@/components/ResultsPromotionBanner';
+import LiveFinalsVisibilityControl from '@/components/LiveFinalsVisibilityControl';
 
 export const metadata: Metadata = {
   title: APP_NAME,
@@ -35,6 +36,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <TimedOutFinalSubmitGuard />
         <MobileProctoringStartGuard />
         <ResultsPromotionBanner />
+        <LiveFinalsVisibilityControl />
       </body>
     </html>
   );
