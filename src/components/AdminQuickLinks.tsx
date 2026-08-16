@@ -152,6 +152,7 @@ export default function AdminQuickLinks() {
           <a className="btn btn-light" href="/admin">Admin</a>
           <a className="btn btn-primary" href="/admin/results">Results</a>
           <a className="btn btn-primary" href="/admin/live-finalists">Live Finalists</a>
+          <a className="btn btn-primary" href="/admin/live-finals">Live Finals Release</a>
           <a className="btn btn-primary" href="/admin/stage-participation">Stage Participation</a>
           <a className="btn btn-primary" href="/admin/payment-sync">Payment Sync</a>
           <a className="btn btn-primary" href="/admin/participants">Participants</a>
