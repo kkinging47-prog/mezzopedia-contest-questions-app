@@ -66,7 +66,27 @@ function promotionFor(sessionStageInput: unknown, currentStageInput: unknown) {
   };
 }
 
-function participantProfile(participant: any) {
+function liveFinalsResultsOpen(config: Record<string, any>) {
+  const raw = config.liveFinalsVisibility || {};
+  return Boolean(raw.isOpen || raw.resultsOpen || raw.visible);
+}
+
+function hiddenLiveFinalsPromotion(fromStageInput: unknown) {
+  const fromStage = normalizeContestStage(fromStageInput || 'Stage 3');
+  return {
+    isPromoted: false,
+    fromStage,
+    currentStage: fromStage,
+    promotedTo: ''
+  };
+}
+
+function notLiveFinalistMessage(liveFinalsReleased: boolean, actualIsLiveFinalist: boolean, hasStage3Result: boolean) {
+  if (!liveFinalsReleased || actualIsLiveFinalist || !hasStage3Result) return '';
+  return 'Thank you for participating in the Mezzopedia National Mathematics Competition. You did very well to reach this level, but you were not selected for the Live Finals this year. Keep practising and try again next year. Download your three-phase results report and answer scripts so you can study the questions you got correct and wrong, strengthen your weak areas, and prepare well for the next competition.';
+}
+
+function participantProfile(participant: any, visibleCurrentStage?: string) {
   const pick = (keys: string[], fallback = '') => {
     for (const key of keys) {
       const value = participant?.[key];
@@ -84,7 +104,7 @@ function participantProfile(participant: any) {
     location: pick(['location', 'district', 'city', 'town']),
     region: pick(['region']),
     paymentStatus: participant.payment_status,
-    currentStage: normalizeContestStage(participant.contest_stage || 'Stage 1')
+    currentStage: visibleCurrentStage || normalizeContestStage(participant.contest_stage || 'Stage 1')
   };
 }
 
@@ -254,14 +274,27 @@ export async function POST(request: Request) {
 
   const stageResults = SUMMARY_STAGES.map(stage => stageResult(stage, stageSessions[stage], questionMap));
   const timeUsedSeconds = sessionTimeUsed(displaySession);
-  const promotion = promotionFor(displaySession.contest_stage || '', participant.contest_stage || displaySession.contest_stage || '');
 
   const { data: configRows } = await supabaseAdmin
     .from('app_config')
     .select('key,value')
-    .in('key', ['stageSettings', 'certificateSettings']);
+    .in('key', ['stageSettings', 'certificateSettings', 'liveFinalsVisibility']);
   const config: Record<string, any> = {};
   for (const row of configRows || []) config[row.key] = row.value;
+
+  const liveFinalsReleased = liveFinalsResultsOpen(config);
+  const actualCurrentStage = normalizeContestStage(participant.contest_stage || displaySession.contest_stage || 'Stage 1');
+  const actualIsLiveFinalist = actualCurrentStage === LIVE_FINALS_STAGE;
+  const visibleCurrentStage = actualIsLiveFinalist && !liveFinalsReleased
+    ? normalizeContestStage(displaySession.contest_stage || 'Stage 3')
+    : actualCurrentStage;
+  const actualPromotion = promotionFor(displaySession.contest_stage || '', actualCurrentStage);
+  const visiblePromotion = actualIsLiveFinalist && !liveFinalsReleased
+    ? hiddenLiveFinalsPromotion(displaySession.contest_stage || 'Stage 3')
+    : actualPromotion;
+  const hasStage3Result = Boolean(stageSessions['Stage 3']);
+  const encouragementMessage = notLiveFinalistMessage(liveFinalsReleased, actualIsLiveFinalist, hasStage3Result);
+
   const certificateDate = certificateDateForStage(config.stageSettings, displaySession.contest_stage || '', config.certificateSettings?.certificateDate || displaySession.submitted_at || '');
 
   const displayMaxScore = Number(displaySession.max_score || displaySession.total_questions || 0);
@@ -271,11 +304,13 @@ export async function POST(request: Request) {
   return Response.json({
     success: true,
     result: {
-      participant: participantProfile(participant),
+      participant: participantProfile(participant, visibleCurrentStage),
       stage: displaySession.contest_stage || '',
-      currentStage: normalizeContestStage(participant.contest_stage || displaySession.contest_stage || 'Stage 1'),
-      promotion,
-      isLiveFinalist: normalizeContestStage(participant.contest_stage || '') === LIVE_FINALS_STAGE,
+      currentStage: visibleCurrentStage,
+      promotion: visiblePromotion,
+      liveFinalsReleased,
+      isLiveFinalist: actualIsLiveFinalist && liveFinalsReleased,
+      notLiveFinalistMessage: encouragementMessage,
       certificateDate,
       status: displaySession.status,
       score: displayScore,
