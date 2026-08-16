@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { jsPDF } from 'jspdf';
 import { DEFAULT_CATEGORIES } from '@/lib/constants';
 
 type StageSummary = { score: number; maxScore: number; percentage: number; timeUsedSeconds: number; submittedAt: string; status: string };
@@ -36,6 +37,10 @@ function csvEscape(value: unknown) {
 function stageScore(row: Finalist, stage: string) {
   const result = row.stageScores?.[stage];
   return result ? `${result.score}/${result.maxScore} (${result.percentage}%)` : '';
+}
+
+function fileSafe(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'all';
 }
 
 export default function LiveFinalistsPage() {
@@ -104,9 +109,95 @@ export default function LiveFinalistsPage() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `mezzopedia-live-finalists-${category.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'all'}.csv`;
+    link.download = `mezzopedia-live-finalists-${fileSafe(category)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  function exportPdf() {
+    if (!filteredRows.length) return;
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 8;
+    const lineHeight = 3.8;
+    const rowMinHeight = 8.5;
+    const columns = [
+      { label: '#', width: 7, value: (_row: Finalist, index: number) => String(index + 1) },
+      { label: 'Name', width: 42, value: (row: Finalist) => row.name },
+      { label: 'Code', width: 20, value: (row: Finalist) => row.usercode },
+      { label: 'Class', width: 20, value: (row: Finalist) => row.class || row.category },
+      { label: 'Location', width: 26, value: (row: Finalist) => row.location },
+      { label: 'Region', width: 22, value: (row: Finalist) => row.region },
+      { label: 'School', width: 37, value: (row: Finalist) => row.school },
+      { label: 'Stage 1', width: 22, value: (row: Finalist) => stageScore(row, 'Stage 1') },
+      { label: 'Stage 2', width: 22, value: (row: Finalist) => stageScore(row, 'Stage 2') },
+      { label: 'Stage 3', width: 22, value: (row: Finalist) => stageScore(row, 'Stage 3') },
+      { label: 'Average', width: 23, value: (row: Finalist) => `${row.averagePercentage}% / ${formatTime(row.averageTimeSeconds)}` }
+    ];
+
+    const generatedAt = new Date().toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+    let pageNumber = 1;
+    let y = 0;
+
+    const addTitleAndHeader = () => {
+      y = 11;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('Mezzopedia Live Finalists List', margin, y);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      y += 6;
+      doc.text(`Category: ${category}    Showing: ${filteredRows.length} finalist(s)    Generated: ${generatedAt}`, margin, y);
+      doc.text(`Page ${pageNumber}`, pageWidth - margin - 18, y);
+      y += 7;
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.5);
+      let x = margin;
+      for (const column of columns) {
+        doc.rect(x, y, column.width, rowMinHeight);
+        doc.text(column.label, x + 1, y + 5.5);
+        x += column.width;
+      }
+      y += rowMinHeight;
+      doc.setFont('helvetica', 'normal');
+    };
+
+    const addWrappedCellText = (text: string, x: number, yTop: number, width: number, maxLines = 3) => {
+      const clean = String(text || '').replace(/\s+/g, ' ').trim();
+      const lines = doc.splitTextToSize(clean || ' ', Math.max(4, width - 2)).slice(0, maxLines);
+      doc.text(lines, x + 1, yTop + 4);
+      return lines.length;
+    };
+
+    addTitleAndHeader();
+
+    filteredRows.forEach((row, index) => {
+      doc.setFontSize(7);
+      const values = columns.map(column => String(column.value(row, index) || ''));
+      const lineCounts = values.map((value, columnIndex) => doc.splitTextToSize(value.replace(/\s+/g, ' ').trim() || ' ', Math.max(4, columns[columnIndex].width - 2)).slice(0, 3).length || 1);
+      const rowHeight = Math.max(rowMinHeight, Math.max(...lineCounts) * lineHeight + 3.5);
+
+      if (y + rowHeight > pageHeight - 10) {
+        doc.addPage();
+        pageNumber += 1;
+        addTitleAndHeader();
+      }
+
+      let x = margin;
+      columns.forEach((column, columnIndex) => {
+        doc.rect(x, y, column.width, rowHeight);
+        addWrappedCellText(values[columnIndex], x, y, column.width, columnIndex === 1 || columnIndex === 6 ? 3 : 2);
+        x += column.width;
+      });
+      y += rowHeight;
+    });
+
+    doc.setFontSize(8);
+    doc.text('This document contains candidates promoted to the Live Finals stage.', margin, pageHeight - 5);
+    doc.save(`mezzopedia-live-finalists-${fileSafe(category)}.pdf`);
   }
 
   if (error && !ready && !loading) {
@@ -122,6 +213,7 @@ export default function LiveFinalistsPage() {
             <a className="btn btn-light" href="/admin">Back to Admin</a>
             <a className="btn btn-light" href="/admin/results">Results</a>
             <button className="btn btn-light" onClick={() => loadFinalists()} disabled={loading}>Refresh</button>
+            <button className="btn btn-light" onClick={exportPdf} disabled={!filteredRows.length}>Export PDF</button>
             <button className="btn btn-primary" onClick={exportCsv} disabled={!filteredRows.length}>Export CSV</button>
           </div>
         </nav>
