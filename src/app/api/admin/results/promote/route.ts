@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { requireAdmin } from '@/lib/auth';
-import { CONTEST_STAGES, MAIN_CONTEST_STAGES } from '@/lib/constants';
+import { CONTEST_STAGES, LIVE_FINALS_STAGE, MAIN_CONTEST_STAGES } from '@/lib/constants';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
 import { jsonError, normalizeContestStage } from '@/lib/utils';
 
@@ -34,7 +34,7 @@ export async function POST(request: NextRequest) {
 
   if (!sessionIds.length) return jsonError('Select one or more completed results to promote.', 400);
   if (!(MAIN_CONTEST_STAGES as readonly string[]).includes(targetStage)) {
-    return jsonError('Promote candidates only to Stage 1, Stage 2 or Stage 3.', 400);
+    return jsonError('Promote candidates only to Stage 1, Stage 2, Stage 3 or Live Finals.', 400);
   }
 
   const { data: sessions, error } = await supabaseAdmin
@@ -78,17 +78,19 @@ export async function POST(request: NextRequest) {
   const participantIds = unique((sessions as any[]).map(row => String(row.participant_id || row.participant?.id || '')).filter(Boolean));
   if (!participantIds.length) return jsonError('No participant records were found for the selected results.', 400);
 
-  const { data: targetSessions, error: targetError } = await supabaseAdmin
-    .from('contest_sessions')
-    .select('id,participant_id,status,contest_stage')
-    .in('participant_id', participantIds)
-    .eq('contest_stage', targetStage)
-    .in('status', ['in_progress', 'completed']);
-  if (targetError) return jsonError(targetError.message, 500);
-  if (targetSessions && targetSessions.length) {
-    const blockedIds = unique((targetSessions as any[]).map(row => String(row.participant_id || '')));
-    const blockedRows = (sessions as any[]).filter(row => blockedIds.includes(String(row.participant_id || row.participant?.id || '')));
-    return jsonError(`Some candidates already have an active or completed ${targetStage} session: ${namesFor(blockedRows)}.`, 400);
+  if (targetStage !== LIVE_FINALS_STAGE) {
+    const { data: targetSessions, error: targetError } = await supabaseAdmin
+      .from('contest_sessions')
+      .select('id,participant_id,status,contest_stage')
+      .in('participant_id', participantIds)
+      .eq('contest_stage', targetStage)
+      .in('status', ['in_progress', 'completed']);
+    if (targetError) return jsonError(targetError.message, 500);
+    if (targetSessions && targetSessions.length) {
+      const blockedIds = unique((targetSessions as any[]).map(row => String(row.participant_id || '')));
+      const blockedRows = (sessions as any[]).filter(row => blockedIds.includes(String(row.participant_id || row.participant?.id || '')));
+      return jsonError(`Some candidates already have an active or completed ${targetStage} session: ${namesFor(blockedRows)}.`, 400);
+    }
   }
 
   const completedSessionIds = (sessions as any[]).map(row => String(row.id));
@@ -103,7 +105,7 @@ export async function POST(request: NextRequest) {
 
   const { error: participantError } = await supabaseAdmin
     .from('participants')
-    .update({ contest_stage: targetStage, is_active: true, login_count: 0, last_login_at: null, updated_at: now })
+    .update({ contest_stage: targetStage, is_active: targetStage === LIVE_FINALS_STAGE ? false : true, login_count: 0, last_login_at: null, updated_at: now })
     .in('id', participantIds);
   if (participantError) return jsonError(participantError.message, 500);
 
@@ -115,7 +117,7 @@ export async function POST(request: NextRequest) {
     .then(() => null);
 
   await supabaseAdmin.from('admin_audit_logs').insert({
-    action: 'PROMOTE_FROM_RESULTS_PAGE',
+    action: targetStage === LIVE_FINALS_STAGE ? 'PROMOTE_TO_LIVE_FINALS' : 'PROMOTE_FROM_RESULTS_PAGE',
     entity_type: 'participant',
     details: {
       targetStage,
@@ -124,7 +126,9 @@ export async function POST(request: NextRequest) {
       completedSessionIds,
       count: participantIds.length,
       unpaidCount,
-      note: 'Selected completed results were archived as expired and participant codes were moved to the selected next stage. Payment status rules still apply at login.'
+      note: targetStage === LIVE_FINALS_STAGE
+        ? 'Selected Stage 3 candidates were moved to Live Finals. Their online code is closed because Live Finals is an onsite stage.'
+        : 'Selected completed results were archived as expired and participant codes were moved to the selected next stage. Payment status rules still apply at login.'
     }
   }).then(() => null);
 
@@ -134,6 +138,8 @@ export async function POST(request: NextRequest) {
     targetStage,
     fromStages,
     unpaidCount,
-    note: unpaidCount ? 'Some promoted candidates are not paid yet. They remain blocked from main-stage login until their payment status is paid.' : ''
+    note: targetStage === LIVE_FINALS_STAGE
+      ? 'Selected candidates have been promoted to Live Finals and will see this on their results page.'
+      : (unpaidCount ? 'Some promoted candidates are not paid yet. They remain blocked from main-stage login until their payment status is paid.' : '')
   });
 }
