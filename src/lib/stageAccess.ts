@@ -1,4 +1,4 @@
-import { CONTEST_STAGES, FINAL_TRIAL_STAGE } from './constants';
+import { CONTEST_STAGES, FINAL_TRIAL_STAGE, LIVE_FINALS_STAGE } from './constants';
 import { normalizeContestStage } from './utils';
 
 export type StageAccessReason = 'open' | 'manual_closed' | 'not_started' | 'ended';
@@ -15,7 +15,8 @@ export const DEFAULT_STAGE_SETTINGS: StageSettings = {
   [FINAL_TRIAL_STAGE]: { isOpen: false, note: 'Practice session before the main quiz. Upload 10 trial questions per category.' },
   'Stage 1': { isOpen: true, note: 'Initial online stage' },
   'Stage 2': { isOpen: false, note: 'Open after Stage 1 qualification' },
-  'Stage 3': { isOpen: false, note: 'Open after Stage 2 qualification' }
+  'Stage 3': { isOpen: false, note: 'Open after Stage 2 qualification' },
+  [LIVE_FINALS_STAGE]: { isOpen: false, note: 'Live finals is an onsite stage. Promoted candidates see this status on their result page; it is not an online test stage.' }
 };
 
 export function normalizeStageSettings(value: unknown): StageSettings {
@@ -64,7 +65,9 @@ export function getStageAccess(stageSettings: StageSettings, stage: string, now 
     return {
       isAccessible: false,
       reason: 'manual_closed' as StageAccessReason,
-      message: `${normalizedStage} is currently closed. Please wait for the contest administrator to open it.`
+      message: normalizedStage === LIVE_FINALS_STAGE
+        ? 'You have been promoted to the Live Finals. This is not an online test stage. Please check your results page or wait for finalist instructions.'
+        : `${normalizedStage} is currently closed. Please wait for the contest administrator to open it.`
     };
   }
 
