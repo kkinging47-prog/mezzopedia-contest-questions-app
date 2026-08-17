@@ -51,6 +51,14 @@ function canPromote(result: Result, targetStage: string) {
   return result.status === 'completed' && stageIndex(targetStage) > stageIndex(result.sessionStage || 'Stage 1');
 }
 
+function defaultTargetForCompletedStage(completedStage: string) {
+  if (!completedStage || completedStage === 'All') return 'Live Finals';
+  const stages = CONTEST_STAGES as readonly string[];
+  const mainStages = MAIN_CONTEST_STAGES as readonly string[];
+  const nextStage = stages[stages.indexOf(completedStage) + 1];
+  return nextStage && mainStages.includes(nextStage) ? nextStage : 'Live Finals';
+}
+
 function dateStartMs(value: string) {
   if (!value) return null;
   const ms = new Date(`${value}T00:00:00`).getTime();
@@ -104,7 +112,7 @@ export default function AdminResultsPage() {
   const [stage, setStage] = useState('All');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [targetStage, setTargetStage] = useState('Stage 1');
+  const [targetStage, setTargetStage] = useState('Live Finals');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [results, setResults] = useState<Result[]>([]);
   const [stats, setStats] = useState<ResultStats>({ allSessionCount: 0, duplicateAttemptCount: 0 });
@@ -132,6 +140,12 @@ export default function AdminResultsPage() {
   function clearDateFilter() {
     setDateFrom('');
     setDateTo('');
+  }
+
+  function changeCompletedStage(value: string) {
+    setStage(value);
+    setTargetStage(defaultTargetForCompletedStage(value));
+    setSelectedIds([]);
   }
 
   async function loadResults() {
@@ -250,7 +264,7 @@ export default function AdminResultsPage() {
             </label>
             <label>
               <span className="label">Filter by Completed Stage</span>
-              <select className="select" value={stage} onChange={e => setStage(e.target.value)}>
+              <select className="select" value={stage} onChange={e => changeCompletedStage(e.target.value)}>
                 {['All', ...CONTEST_STAGES].map(item => <option key={item}>{item}</option>)}
               </select>
             </label>
@@ -264,7 +278,7 @@ export default function AdminResultsPage() {
             </label>
             <label>
               <span className="label">Promote Selected To</span>
-              <select className="select" value={targetStage} onChange={e => setTargetStage(e.target.value)}>
+              <select className="select" value={targetStage} onChange={e => { setTargetStage(e.target.value); setSelectedIds([]); }}>
                 {MAIN_CONTEST_STAGES.map(item => <option key={item}>{item}</option>)}
               </select>
             </label>
@@ -278,14 +292,15 @@ export default function AdminResultsPage() {
           <div className="grid grid-4">
             <Metric title="Official Results" value={String(results.length)} />
             <Metric title="Showing" value={String(rankedResults.length)} />
-            <Metric title="Hidden Attempts" value={String(stats.duplicateAttemptCount)} />
+            <Metric title="Eligible for Target" value={String(eligibleResults.length)} />
             <Metric title="Order" value="Score ↓ / Time ↑" />
           </div>
         </section>
 
         <section className="card card-pad no-print" style={{ marginTop: 18 }}>
           <h2>Promote passed candidates</h2>
-          <p className="muted">Select completed candidates below and promote them to Stage 1, Stage 2 or Stage 3. The system only allows forward promotion. Already promoted/archived results cannot be selected again.</p>
+          <p className="muted">Select completed candidates below and promote them to Stage 1, Stage 2, Stage 3 or Live Finals. The system only allows forward promotion. Already promoted/archived results cannot be selected again.</p>
+          <div className="alert alert-info">For Live Finals, set <strong>Filter by Completed Stage</strong> to <strong>Stage 3</strong>, set <strong>Promote Selected To</strong> to <strong>Live Finals</strong>, then select the qualified candidates.</div>
           <div className="flex wrap">
             <button className="btn btn-light" onClick={selectEligibleShown} disabled={!eligibleResults.length || promoting}>Select Eligible Shown</button>
             <button className="btn btn-light" onClick={() => selectTop(10)} disabled={!eligibleResults.length || promoting}>Select Top 10 Eligible</button>
