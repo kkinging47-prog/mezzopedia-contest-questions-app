@@ -40,6 +40,7 @@ function csvSafe(value: unknown) {
 export default function LiveFinalsReleasePage() {
   const [settings, setSettings] = useState<VisibilitySettings | null>(null);
   const [finalists, setFinalists] = useState<FinalistRow[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
   const [loading, setLoading] = useState(false);
@@ -70,6 +71,7 @@ export default function LiveFinalsReleasePage() {
     }
     setSettings(json.settings || null);
     setFinalists(json.finalists || []);
+    setSelectedIds([]);
     setMessage('');
   }
 
@@ -98,9 +100,48 @@ export default function LiveFinalsReleasePage() {
     }
     setSettings(json.settings || null);
     setFinalists(json.finalists || []);
+    setSelectedIds([]);
     setMessage(isOpen
       ? 'Live Finals promotion status is now open on the public results page.'
       : 'Live Finals promotion status is now hidden on the public results page.');
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
+  }
+
+  function selectShown() {
+    setSelectedIds(filteredFinalists.map(row => row.id));
+  }
+
+  async function removeFinalists(ids: string[], label = 'selected candidate(s)') {
+    if (!ids.length) {
+      setError('Select at least one Live Finals candidate first.');
+      return;
+    }
+
+    const warning = `Remove ${ids.length} ${label} from Live Finals?\n\nThey will be returned to Stage 3, their code will be closed, and they will no longer see the Live Finals promotion banner when results are released.`;
+    if (!confirm(warning)) return;
+
+    setLoading(true);
+    setError('');
+    setMessage('Removing selected candidate(s) from Live Finals...');
+    const res = await fetch('/api/admin/live-finals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'removeFromLiveFinals', participantIds: ids, returnStage: 'Stage 3' })
+    });
+    const json = await res.json().catch(() => ({}));
+    setLoading(false);
+    if (!res.ok) {
+      setError(json.error || 'Could not remove candidate(s) from Live Finals.');
+      setMessage('');
+      return;
+    }
+    setSettings(json.settings || null);
+    setFinalists(json.finalists || []);
+    setSelectedIds([]);
+    setMessage(`Removed ${json.removedCount || 0} candidate(s) from Live Finals and returned them to ${json.returnedToStage || 'Stage 3'}.`);
   }
 
   function exportCsv() {
@@ -165,6 +206,9 @@ export default function LiveFinalsReleasePage() {
           <div className="flex wrap no-print">
             <button className="btn btn-success" onClick={() => setRelease(true)} disabled={loading || isOpen}>Open Live Finals Results</button>
             <button className="btn btn-danger" onClick={() => setRelease(false)} disabled={loading || !isOpen}>Hide Live Finals Results</button>
+            <button className="btn btn-light" onClick={selectShown} disabled={!filteredFinalists.length || loading}>Select Shown</button>
+            <button className="btn btn-light" onClick={() => setSelectedIds([])} disabled={!selectedIds.length || loading}>Clear Selection</button>
+            <button className="btn btn-danger" onClick={() => removeFinalists(selectedIds)} disabled={!selectedIds.length || loading}>Remove Selected ({selectedIds.length})</button>
             <button className="btn btn-primary" onClick={exportCsv} disabled={!filteredFinalists.length}>Export Finalists CSV</button>
           </div>
 
@@ -189,8 +233,9 @@ export default function LiveFinalsReleasePage() {
 
           {!loading && !finalists.length && <div className="alert alert-info" style={{ marginTop: 18 }}>No candidate is currently assigned to Live Finals. Go to Stage Controls, select Stage 3 results, choose the qualifiers, and promote them to Live Finals first.</div>}
           {!!filteredFinalists.length && <div className="table-wrap" style={{ marginTop: 18 }}><table>
-            <thead><tr><th>Name</th><th>Code</th><th>Category</th><th>Payment</th><th>Access</th><th>Logins</th><th>Last Login</th></tr></thead>
+            <thead><tr><th>Select</th><th>Name</th><th>Code</th><th>Category</th><th>Payment</th><th>Access</th><th>Logins</th><th>Last Login</th><th>Action</th></tr></thead>
             <tbody>{filteredFinalists.map(row => <tr key={row.id}>
+              <td><input type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => toggleSelected(row.id)} /></td>
               <td>{row.name}</td>
               <td><strong>{row.usercode}</strong></td>
               <td>{row.category}</td>
@@ -198,6 +243,7 @@ export default function LiveFinalsReleasePage() {
               <td>{row.isActive ? 'Open' : 'Closed'}</td>
               <td>{row.loginCount || 0}</td>
               <td>{formatDate(row.lastLoginAt)}</td>
+              <td><button className="btn btn-danger no-print" onClick={() => removeFinalists([row.id], row.name || row.usercode)} disabled={loading}>Remove</button></td>
             </tr>)}</tbody>
           </table></div>}
         </section>
