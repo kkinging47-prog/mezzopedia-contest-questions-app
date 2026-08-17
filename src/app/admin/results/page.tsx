@@ -34,7 +34,7 @@ type ResultStats = {
 
 function formatTime(seconds: number) {
   const m = Math.floor((seconds || 0) / 60);
-  const s = Math.floor((seconds || 0) % 60);
+  const s = (seconds || 0) % 60;
   return `${m}m ${s}s`;
 }
 
@@ -48,7 +48,17 @@ function stageIndex(stage: string) {
 }
 
 function canPromote(result: Result, targetStage: string) {
-  return result.status === 'completed' && stageIndex(targetStage) > stageIndex(result.sessionStage || 'Stage 1');
+  const forward = stageIndex(targetStage) > stageIndex(result.sessionStage || 'Stage 1');
+  if (!forward) return false;
+  if (result.status === 'completed') return true;
+
+  // If a Stage 3 candidate was promoted to Live Finals, then removed, the Stage 3
+  // result may already be archived. Allow that archived Stage 3 result to be selected
+  // again for Live Finals without forcing the candidate to rewrite Stage 3.
+  return targetStage === 'Live Finals'
+    && result.status === 'expired'
+    && result.sessionStage === 'Stage 3'
+    && result.currentStage === 'Stage 3';
 }
 
 function defaultTargetForCompletedStage(completedStage: string) {
@@ -211,7 +221,7 @@ export default function AdminResultsPage() {
       ? `\n\nNote: ${unpaidCount} selected candidate(s) are not paid yet. They will be moved to ${targetStage}, but the login rules will still block them from the main stage until payment is marked paid.`
       : '';
 
-    if (!confirm(`Promote ${selectedIds.length} selected candidate(s) to ${targetStage}? Their completed result will be archived so their code can start the new stage.${warning}`)) return;
+    if (!confirm(`Promote ${selectedIds.length} selected candidate(s) to ${targetStage}? Their result will remain available for reporting, and their code will be moved to the target stage.${warning}`)) return;
 
     setPromoting(true);
     const res = await fetch('/api/admin/results/promote', {
@@ -299,8 +309,8 @@ export default function AdminResultsPage() {
 
         <section className="card card-pad no-print" style={{ marginTop: 18 }}>
           <h2>Promote passed candidates</h2>
-          <p className="muted">Select completed candidates below and promote them to Stage 1, Stage 2, Stage 3 or Live Finals. The system only allows forward promotion. Already promoted/archived results cannot be selected again.</p>
-          <div className="alert alert-info">For Live Finals, set <strong>Filter by Completed Stage</strong> to <strong>Stage 3</strong>, set <strong>Promote Selected To</strong> to <strong>Live Finals</strong>, then select the qualified candidates.</div>
+          <p className="muted">Select completed candidates below and promote them to Stage 1, Stage 2, Stage 3 or Live Finals. The system only allows forward promotion. If a candidate was removed from Live Finals, their archived Stage 3 result can still be selected again for Live Finals.</p>
+          <div className="alert alert-info">For Live Finals, set <strong>Filter by Completed Stage</strong> to <strong>Stage 3</strong>, set <strong>Promote Selected To</strong> to <strong>Live Finals</strong>, then select the qualified candidates. Candidates removed from Live Finals will show as <strong>Archived / promoted</strong>, but they can now be selected again if their current stage is Stage 3.</div>
           <div className="flex wrap">
             <button className="btn btn-light" onClick={selectEligibleShown} disabled={!eligibleResults.length || promoting}>Select Eligible Shown</button>
             <button className="btn btn-light" onClick={() => selectTop(10)} disabled={!eligibleResults.length || promoting}>Select Top 10 Eligible</button>
@@ -332,7 +342,7 @@ export default function AdminResultsPage() {
                 <td>{formatTime(result.timeUsedSeconds)}</td>
                 <td>{formatSubmitted(result.submittedAt)}</td>
                 <td>{result.attemptCount || 1}{(result.hiddenAttemptCount || 0) > 0 && <div className="small muted">{result.hiddenAttemptCount} hidden duplicate(s)</div>}</td>
-                <td>{result.status === 'completed' ? 'Completed' : 'Archived / promoted'}{!eligible && <div className="small muted">Not eligible for {targetStage}</div>}</td>
+                <td>{result.status === 'completed' ? 'Completed' : 'Archived / promoted'}{!eligible && <div className="small muted">Not eligible for {targetStage}</div>}{eligible && result.status !== 'completed' && <div className="small muted">Can be re-promoted to Live Finals</div>}</td>
                 <td>{result.proctoringSummary?.riskLevel || 'LOW'} ({result.proctoringSummary?.total || 0})</td>
               </tr>;
             })}</tbody>
