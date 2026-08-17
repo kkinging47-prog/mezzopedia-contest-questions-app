@@ -41,6 +41,7 @@ export default function LiveFinalsReleasePage() {
   const [settings, setSettings] = useState<VisibilitySettings | null>(null);
   const [finalists, setFinalists] = useState<FinalistRow[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [pendingRelease, setPendingRelease] = useState<boolean | null>(null);
   const [search, setSearch] = useState('');
   const [category, setCategory] = useState('All');
   const [loading, setLoading] = useState(false);
@@ -72,17 +73,14 @@ export default function LiveFinalsReleasePage() {
     setSettings(json.settings || null);
     setFinalists(json.finalists || []);
     setSelectedIds([]);
+    setPendingRelease(null);
     setMessage('');
   }
 
   useEffect(() => { loadData(); }, []);
 
   async function setRelease(isOpen: boolean) {
-    const warning = isOpen
-      ? 'Release Live Finals promotion status now? Candidates assigned to Live Finals will see the PROMOTED TO LIVE FINALS banner when they check results.'
-      : 'Hide Live Finals promotion status? Candidates will still see their scores, but they will not see the Live Finals promotion banner.';
-    if (!confirm(warning)) return;
-
+    setPendingRelease(null);
     setLoading(true);
     setError('');
     setMessage(isOpen ? 'Opening Live Finals promotion visibility...' : 'Hiding Live Finals promotion visibility...');
@@ -169,6 +167,12 @@ export default function LiveFinalsReleasePage() {
   }
 
   const isOpen = Boolean(settings?.isOpen || settings?.resultsOpen || settings?.visible);
+  const releasePanelTitle = pendingRelease
+    ? 'Open Live Finals Results?'
+    : 'Hide Live Finals Results?';
+  const releasePanelText = pendingRelease
+    ? 'Candidates assigned to Live Finals will see the PROMOTED TO LIVE FINALS banner when they check results.'
+    : 'Candidates will still see their scores and scripts, but the Live Finals promotion banner will be hidden.';
 
   return (
     <main className="math-bg" style={{ paddingBottom: 40 }}>
@@ -203,9 +207,21 @@ export default function LiveFinalsReleasePage() {
             When this is hidden, a candidate assigned to Live Finals will still see their ordinary results and scripts, but the <strong>PROMOTED TO LIVE FINALS</strong> banner will not show. When you open it, only candidates whose assigned stage is <strong>Live Finals</strong> will see the promotion banner.
           </div>
 
+          {pendingRelease !== null && <div className="alert alert-error" style={{ border: '2px solid rgba(220,38,38,0.28)' }}>
+            <div className="flex between wrap" style={{ gap: 10 }}>
+              <strong>{releasePanelTitle}</strong>
+              <button type="button" className="btn btn-light" onClick={() => setPendingRelease(null)} disabled={loading}>Close ×</button>
+            </div>
+            <p style={{ marginTop: 10 }}>{releasePanelText}</p>
+            <div className="flex wrap no-print">
+              <button className={pendingRelease ? 'btn btn-success' : 'btn btn-danger'} onClick={() => setRelease(Boolean(pendingRelease))} disabled={loading}>{pendingRelease ? 'Yes, Open Live Finals Results' : 'Yes, Hide Live Finals Results'}</button>
+              <button className="btn btn-light" onClick={() => setPendingRelease(null)} disabled={loading}>Cancel</button>
+            </div>
+          </div>}
+
           <div className="flex wrap no-print">
-            <button className="btn btn-success" onClick={() => setRelease(true)} disabled={loading || isOpen}>Open Live Finals Results</button>
-            <button className="btn btn-danger" onClick={() => setRelease(false)} disabled={loading || !isOpen}>Hide Live Finals Results</button>
+            <button className="btn btn-success" onClick={() => setPendingRelease(true)} disabled={loading || isOpen}>Open Live Finals Results</button>
+            <button className="btn btn-danger" onClick={() => setPendingRelease(false)} disabled={loading || !isOpen}>Hide Live Finals Results</button>
             <button className="btn btn-light" onClick={selectShown} disabled={!filteredFinalists.length || loading}>Select Shown</button>
             <button className="btn btn-light" onClick={() => setSelectedIds([])} disabled={!selectedIds.length || loading}>Clear Selection</button>
             <button className="btn btn-danger" onClick={() => removeFinalists(selectedIds)} disabled={!selectedIds.length || loading}>Remove Selected ({selectedIds.length})</button>
