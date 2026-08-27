@@ -405,7 +405,7 @@ function ScriptList({ script }: { script: ScriptItem[] }) {
   </div>;
 }
 
-function Metric({ title, value }: { title: string }) {
+function Metric({ title, value }: { title: string; value: string }) {
   return <div className="card card-pad" style={{ textAlign: 'center', boxShadow: 'none' }}><div className="muted small">{title}</div><h2>{value}</h2></div>;
 }
 
