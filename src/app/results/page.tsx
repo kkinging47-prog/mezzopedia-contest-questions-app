@@ -95,6 +95,7 @@ export default function ResultsPage() {
   const analysis = useMemo(() => result ? createAnalysis(result) : null, [result]);
   const promotedTo = result?.promotion?.isPromoted ? result.promotion.promotedTo : '';
   const stageRows = useMemo(() => (result?.stageResults || []).filter(Boolean) as StageResult[], [result]);
+  const stagesWithScripts = useMemo(() => stageRows.filter(stage => (stage.script || []).length), [stageRows]);
 
   useEffect(() => {
     fetch('/api/auth/participant/logout', { method: 'POST' }).catch(() => null);
@@ -160,7 +161,22 @@ export default function ResultsPage() {
     return y + 4;
   }
 
-  function addScriptToPdf(doc: jsPDF, startY: number, script = result?.script || [], title = 'Candidate Answer Script') {
+  function addStageHeaderToPdf(doc: jsPDF, y: number, stage: StageResult) {
+    y = ensureSpace(doc, y, 26);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.text(`${stage.stage} Result`, 20, y);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    y += 7;
+    doc.text(`Score: ${stage.score}/${stage.maxScore} (${stage.percentage}%)`, 20, y);
+    doc.text(`Time: ${formatTime(stage.timeUsedSeconds)}`, 92, y);
+    y += 7;
+    doc.text(`Submitted: ${formatDate(stage.submittedAt)}`, 20, y);
+    return y + 8;
+  }
+
+  function addScriptToPdf(doc: jsPDF, startY: number, script: ScriptItem[] = [], title = 'Candidate Answer Script') {
     if (!script.length) return startY;
     let y = ensureSpace(doc, startY, 20);
     doc.setFontSize(14);
@@ -183,6 +199,16 @@ export default function ResultsPage() {
       y = addWrappedText(doc, `Points: ${item.pointsAwarded}/${item.points} • ${status}`, 20, y + 1, 170, 4.5);
       if (item.explanation) y = addWrappedText(doc, `Explanation: ${item.explanation}`, 20, y + 1, 170, 4.5);
       y += 4;
+    }
+    return y;
+  }
+
+  function addAllStageScriptsToPdf(doc: jsPDF, startY: number) {
+    let y = startY;
+    for (const stage of stagesWithScripts) {
+      y = ensureSpace(doc, y + 6, 35);
+      y = addStageHeaderToPdf(doc, y, stage);
+      y = addScriptToPdf(doc, y, stage.script || [], `${stage.stage} Answer Script`);
     }
     return y;
   }
@@ -213,8 +239,8 @@ export default function ResultsPage() {
     y = addWrappedText(doc, analysis.summary, 20, y, 170, 5);
     y = addWrappedText(doc, analysis.advice, 20, y + 2, 170, 5);
     y = addStageSummaryToPdf(doc, y + 8);
-    addScriptToPdf(doc, y + 4);
-    doc.save(`mezzopedia-result-summary-${result.participant.usercode}.pdf`);
+    addAllStageScriptsToPdf(doc, y + 4);
+    doc.save(`mezzopedia-result-summary-all-stages-${result.participant.usercode}.pdf`);
   }
 
   function downloadSummaryPdf() {
@@ -225,15 +251,21 @@ export default function ResultsPage() {
     doc.save(`mezzopedia-three-stage-summary-${result.participant.usercode}.pdf`);
   }
 
-  function downloadScriptPdf() {
+  function downloadAllScriptsPdf() {
     if (!result) return;
     const doc = new jsPDF();
-    const y = addHeader(doc, 'Mezzopedia Candidate Answer Script');
-    doc.setFontSize(11);
-    doc.text(`Latest stage: ${result.stage || ''}`, 20, y);
-    doc.text(`Score: ${result.score}/${result.maxScore} (${result.percentage}%)`, 20, y + 10);
-    addScriptToPdf(doc, y + 24);
-    doc.save(`mezzopedia-script-${result.participant.usercode}.pdf`);
+    const y = addHeader(doc, 'Mezzopedia All Stage Answer Scripts');
+    addAllStageScriptsToPdf(doc, y);
+    doc.save(`mezzopedia-all-stage-scripts-${result.participant.usercode}.pdf`);
+  }
+
+  function downloadStageScriptPdf(stage: StageResult) {
+    if (!result) return;
+    const doc = new jsPDF();
+    let y = addHeader(doc, `Mezzopedia ${stage.stage} Answer Script`);
+    y = addStageHeaderToPdf(doc, y, stage);
+    addScriptToPdf(doc, y, stage.script || [], `${stage.stage} Answer Script`);
+    doc.save(`mezzopedia-${stage.stage.toLowerCase().replaceAll(' ', '-')}-script-${result.participant.usercode}.pdf`);
   }
 
   async function downloadCertificatePdf() {
@@ -247,7 +279,7 @@ export default function ResultsPage() {
         <div className="card card-pad">
           <div className="flex between wrap no-print">
             <Link href="/" className="badge">← Back to Home</Link>
-            {result && <div className="flex wrap"><button className="btn btn-light" onClick={() => window.print()}>Print</button><button className="btn btn-primary" onClick={downloadPdf}>Download Result + Summary PDF</button><button className="btn btn-light" onClick={downloadSummaryPdf}>Download 3-Stage Summary PDF</button><button className="btn btn-light" onClick={downloadScriptPdf}>Download Script PDF</button><button className="btn btn-success" onClick={downloadCertificatePdf}>Download Certificate PDF</button></div>}
+            {result && <div className="flex wrap"><button className="btn btn-light" onClick={() => window.print()}>Print</button><button className="btn btn-primary" onClick={downloadPdf}>Download Result + All Scripts PDF</button><button className="btn btn-light" onClick={downloadSummaryPdf}>Download 3-Stage Summary PDF</button><button className="btn btn-light" onClick={downloadAllScriptsPdf} disabled={!stagesWithScripts.length}>Download All Stage Scripts PDF</button><button className="btn btn-success" onClick={downloadCertificatePdf}>Download Certificate PDF</button></div>}
           </div>
 
           {!result ? (
@@ -289,12 +321,12 @@ export default function ResultsPage() {
               <ThreeStageSummary result={result} stageRows={stageRows} />
 
               <div className="card card-pad" style={{ marginTop: 18, boxShadow: 'none' }}>
-                <h2>Latest Answer Script</h2>
-                <p className="muted">This shows each question, the options, the answer selected by the candidate, the correct answer and the points awarded for the latest available stage result.</p>
-                {!result.script?.length ? <div className="alert alert-info">The answer script is not available for this result.</div> : <ScriptList script={result.script} />}
+                <h2>All Stage Answer Scripts</h2>
+                <p className="muted">This shows the questions answered in every completed online stage, including the candidate's selected answer, the correct answer and the points awarded.</p>
+                {!stagesWithScripts.length ? <div className="alert alert-info">No stage answer script is available for this result.</div> : <StageScriptsList stages={stagesWithScripts} onDownload={downloadStageScriptPdf} />}
               </div>
 
-              <div className="alert alert-info no-print" style={{ marginTop: 18 }}>You can download your three-stage summary, official certificate of participation and answer script as PDF using the buttons above.</div>
+              <div className="alert alert-info no-print" style={{ marginTop: 18 }}>You can download the full result, all stage answer scripts, three-stage summary and certificate using the buttons above. Each stage also has its own script download button.</div>
             </section>
           )}
         </div>
@@ -334,6 +366,21 @@ function ThreeStageSummary({ result, stageRows }: { result: Result; stageRows: S
   </div>;
 }
 
+function StageScriptsList({ stages, onDownload }: { stages: StageResult[]; onDownload: (stage: StageResult) => void }) {
+  return <div className="grid">
+    {stages.map(stage => <div key={stage.stage} className="card card-pad" style={{ boxShadow: 'none', border: '1px solid rgba(37,99,235,0.18)' }}>
+      <div className="flex between wrap">
+        <div>
+          <h3 style={{ margin: 0 }}>{stage.stage} Answer Script</h3>
+          <p className="small muted" style={{ marginTop: 6 }}>{stage.score}/{stage.maxScore} • {stage.percentage}% • {formatTime(stage.timeUsedSeconds)} • Submitted: {formatDate(stage.submittedAt)}</p>
+        </div>
+        <button className="btn btn-light no-print" onClick={() => onDownload(stage)}>Download {stage.stage} Script</button>
+      </div>
+      <ScriptList script={stage.script || []} />
+    </div>)}
+  </div>;
+}
+
 function ScriptList({ script }: { script: ScriptItem[] }) {
   return <div className="grid">
     {script.map(item => <div key={item.questionId} className="card card-pad" style={{ boxShadow: 'none', border: `1px solid ${item.isCorrect ? '#bbf7d0' : '#fecaca'}` }}>
@@ -358,7 +405,7 @@ function ScriptList({ script }: { script: ScriptItem[] }) {
   </div>;
 }
 
-function Metric({ title, value }: { title: string; value: string }) {
+function Metric({ title, value }: { title: string }) {
   return <div className="card card-pad" style={{ textAlign: 'center', boxShadow: 'none' }}><div className="muted small">{title}</div><h2>{value}</h2></div>;
 }
 
